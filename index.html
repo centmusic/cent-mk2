@@ -2037,9 +2037,11 @@ async function sbCallFn(fn, params) {
       case 'cancelAttendance': {
         const studentName = params;
         // 가장 최근 유효 출결 찾기
-        // 해당 학생의 전체 출결 중 취소 안 된 가장 최근 것
-        const allAtts = await sbQuery(`attendance?student_name=eq.${studentName}&order=class_date.desc&select=id,memo`);
-        const atts = (Array.isArray(allAtts) ? allAtts : []).filter(a => !String(a.memo||'').startsWith('[취소]')).slice(0,1);
+        // 취소 안 된 가장 최근 출결 (날짜 무관 — 어제 출결도 취소 가능)
+        const allAtts = await sbQuery(`attendance?student_name=eq.${studentName}&order=class_date.desc&select=id,memo,class_date`);
+        const atts = (Array.isArray(allAtts) ? allAtts : [])
+          .filter(a => !String(a.memo||'').startsWith('[취소]'))
+          .slice(0,1);
         if (!atts.length) return { success: false, error: '취소할 출결 없음' };
         const att = atts[0];
         const cancelTime = new Date().toISOString().slice(0,16).replace('T',' ');
@@ -3857,9 +3859,11 @@ function renderTodayClasses() {
   const myStudentNames = new Set(
     sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
   );
-  // 오늘 출결 체크한 학생 목록 — 담당 학생 기준 (누가 체크했든 상관없이)
+  // 오늘 출결 체크한 학생 목록 — 취소된 것 제외
   const todayAttendance = sdAttendance()
-    .filter(a => myStudentNames.has(a.studentName) && a.classDate && a.classDate.startsWith(todayStr))
+    .filter(a => myStudentNames.has(a.studentName) &&
+                 a.classDate && a.classDate.startsWith(todayStr) &&
+                 !(a.memo||'').startsWith('[취소]'))
     .map(a => a.studentName);
 
   // 오늘 시간표의 학생들
@@ -4229,9 +4233,12 @@ function renderTeacherHistory() {
 
     // 보유 회차만큼 박스, 사용 횟수만큼 체크
     // 사용 내역 중 결석 여부 파악 (최근 used개)
-    // 해당 학생의 전체 출결 기록 (이달 외 포함 — 체크박스 박스 수는 총 수강권 기준)
+    // 유효 출결만 (취소 제외, 결제일 이후, 오름차순)
+    const payDateForAtt = s?.paymentDate || '';
     const attList = sdAttendance()
-      .filter(a => a.studentName === name)
+      .filter(a => a.studentName === name &&
+                   !(a.memo||'').startsWith('[취소]') &&
+                   (!(payDateForAtt) || (a.classDate||'').slice(0,10) >= payDateForAtt))
       .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
 
     let boxes = '';
