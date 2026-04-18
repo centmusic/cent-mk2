@@ -1784,34 +1784,38 @@ const SUPABASE_URL = 'https://bzfaxdufywrjgvvmylwi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_MhmPxLmoaJEOqD4faKmFSw_gr_5699n';
 
 // Supabase REST API 헬퍼
-async function sbQuery(table, options = {}) {
-  const { method='GET', body, select, filters=[], order, limit } = options;
-  let url = `${SUPABASE_URL}/rest/v1/${table}`;
-  const params = [];
-  if (select) params.push(`select=${select}`);
-  filters.forEach(f => params.push(f));
-  if (order) params.push(`order=${order}`);
-  if (limit) params.push(`limit=${limit}`);
-  if (params.length) url += '?' + params.join('&');
+async function sbQuery(path, options = {}) {
+  const { method='GET', body } = options;
+  // path에 이미 필터가 포함된 형태로 호출
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+
+  const headers = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=representation'
+  };
 
   const res = await fetch(url, {
     method,
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': method === 'POST' ? 'return=representation' : 'return=representation'
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Supabase error: ${err}`);
+    throw new Error(`Supabase error (${ res.status }): ${err}`);
   }
   if (method === 'DELETE' || res.status === 204) return { success: true };
-  const data = await res.json();
-  return data;
+  const text = await res.text();
+  if (!text) return [];
+  return JSON.parse(text);
+}
+
+// 이름으로 학생 찾기 헬퍼 (특수문자 처리)
+async function findStudentByName(name) {
+  const res = await sbQuery(`students?select=*&name=eq.${name}`);
+  return Array.isArray(res) ? res : [];
 }
 
 // ── callAPI 호환 래퍼 (기존 코드 최대한 유지)
@@ -1986,13 +1990,7 @@ async function sbCallFn(fn, params) {
         const d = params;
         const now = d.classDate ? new Date(d.classDate) : new Date();
         // 학생 현재 횟수 조회
-        const stuArr = await sbQuery(`students?id=eq.${d.rowIndex || 0}&name=eq.${encodeURIComponent(d.studentName)}`,
-          { select: 'id,total_sessions,used_sessions' });
-        // rowIndex 없으면 이름으로만 찾기
-        const stuByName = stuArr.length ? stuArr : await sbQuery(
-          `students?name=eq.${encodeURIComponent(d.studentName)}`,
-          { select: 'id,total_sessions,used_sessions', limit: 1 }
-        );
+        const stuByName = await findStudentByName(d.studentName);
         if (!stuByName.length) return { success: false, error: '학생 없음' };
         const stu = stuByName[0];
         const used = (stu.used_sessions||0) + 1;
@@ -2039,10 +2037,9 @@ async function sbCallFn(fn, params) {
       case 'cancelAttendance': {
         const studentName = params;
         // 가장 최근 유효 출결 찾기
-        const atts = await sbQuery(
-          `attendance?student_name=eq.${encodeURIComponent(studentName)}&memo=not.like.*[취소]*&order=class_date.desc&limit=1`,
-          { select: 'id,memo' }
-        );
+        // 해당 학생의 전체 출결 중 취소 안 된 가장 최근 것
+        const allAtts = await sbQuery(`attendance?student_name=eq.${studentName}&order=class_date.desc&select=id,memo`);
+        const atts = (Array.isArray(allAtts) ? allAtts : []).filter(a => !String(a.memo||'').startsWith('[취소]')).slice(0,1);
         if (!atts.length) return { success: false, error: '취소할 출결 없음' };
         const att = atts[0];
         const cancelTime = new Date().toISOString().slice(0,16).replace('T',' ');
@@ -2052,10 +2049,7 @@ async function sbCallFn(fn, params) {
           body: { memo: `[취소] ${cancelTime}${att.memo ? ' / '+att.memo : ''}` }
         });
         // 학생 횟수 복원
-        const stuArr = await sbQuery(
-          `students?name=eq.${encodeURIComponent(studentName)}`,
-          { select: 'id,total_sessions,used_sessions', limit: 1 }
-        );
+        const stuArr = await findStudentByName(studentName);
         if (!stuArr.length) return { success: false, error: '학생 없음' };
         const stu = stuArr[0];
         const used = Math.max(0, (stu.used_sessions||0) - 1);
@@ -2072,10 +2066,7 @@ async function sbCallFn(fn, params) {
       case 'addPayment': {
         const d = params;
         const newTotal = Number(d.totalSessions)||0;
-        const stuArr = await sbQuery(
-          `students?name=eq.${encodeURIComponent(d.studentName)}`,
-          { select: 'id,total_sessions,used_sessions', limit: 1 }
-        );
+        const stuArr = await findStudentByName(d.studentName);
         if (!stuArr.length) return { success: false, error: '학생 없음' };
         const stu = stuArr[0];
         const curUsed = stu.used_sessions||0;
@@ -2119,7 +2110,7 @@ async function sbCallFn(fn, params) {
       case 'cancelPayment': {
         const d = params;
         const remaining = Number(d.remainingSessions)||0;
-        await sbQuery(`students?name=eq.${encodeURIComponent(d.studentName)}`, {
+        await sbQuery(`students?name=eq.${d.studentName}`, {
           method: 'PATCH',
           body: {
             package_type: '', total_sessions: remaining, used_sessions: 0,
@@ -2128,10 +2119,8 @@ async function sbCallFn(fn, params) {
           }
         });
         // 가장 최근 결제기록 취소 처리
-        const pays = await sbQuery(
-          `payments?student_name=eq.${encodeURIComponent(d.studentName)}&is_cancelled=eq.false&order=payment_date.desc&limit=1`,
-          { select: 'id' }
-        );
+        const allPays = await sbQuery(`payments?student_name=eq.${d.studentName}&order=payment_date.desc&select=id,is_cancelled`);
+        const pays = (Array.isArray(allPays) ? allPays : []).filter(p => !p.is_cancelled).slice(0,1);
         if (pays.length) {
           await sbQuery(`payments?id=eq.${pays[0].id}`, {
             method: 'PATCH',
@@ -2146,7 +2135,7 @@ async function sbCallFn(fn, params) {
         const d = params;
         // 같은 선생님+요일+시작시간+학생 있으면 업데이트, 없으면 추가
         const existing = await sbQuery(
-          `timetable?teacher_name=eq.${encodeURIComponent(d.teacherName)}&day_of_week=eq.${encodeURIComponent(d.dayOfWeek)}&start_time=eq.${encodeURIComponent(d.startTime)}&linked_student=eq.${encodeURIComponent(d.linkedStudent||'')}`,
+          `timetable?teacher_name=eq.${d.teacherName}&day_of_week=eq.${d.dayOfWeek}&start_time=eq.${d.startTime}&linked_student=eq.${d.linkedStudent||''}`,
           { select: 'id', limit: 1 }
         );
         const body = {
@@ -2165,8 +2154,8 @@ async function sbCallFn(fn, params) {
       // ── 시간표 삭제
       case 'deleteTimetableSlot': {
         const d = params;
-        let url = `timetable?teacher_name=eq.${encodeURIComponent(d.teacherName)}&day_of_week=eq.${encodeURIComponent(d.dayOfWeek)}&start_time=eq.${encodeURIComponent(d.startTime)}`;
-        if (d.linkedStudent) url += `&linked_student=eq.${encodeURIComponent(d.linkedStudent)}`;
+        let url = `timetable?teacher_name=eq.${d.teacherName}&day_of_week=eq.${d.dayOfWeek}&start_time=eq.${d.startTime}`;
+        if (d.linkedStudent) url += `&linked_student=eq.${d.linkedStudent}`;
         await sbQuery(url, { method: 'DELETE' });
         return { success: true };
       }
