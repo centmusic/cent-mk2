@@ -2064,6 +2064,31 @@ async function sbCallFn(fn, params) {
         return { success: true, message: '출결이 취소되었습니다.', used, total, remaining, needPayment: remaining <= 0 };
       }
 
+      // ── 출결 취소 (ID 기반 — 관리자 출석관리 탭용)
+      case 'cancelAttendanceById': {
+        const { attRowIndex, studentName } = params;
+        const attArr = await sbQuery(`attendance?id=eq.${attRowIndex}&select=id,memo`);
+        if (!Array.isArray(attArr) || !attArr.length) return { success: false, error: '출결 기록 없음' };
+        const att = attArr[0];
+        if (String(att.memo||'').startsWith('[취소]')) return { success: false, error: '이미 취소된 출결입니다' };
+        const cancelTime = new Date().toISOString().slice(0,16).replace('T',' ');
+        await sbQuery(`attendance?id=eq.${attRowIndex}`, {
+          method: 'PATCH',
+          body: { memo: `[취소] ${cancelTime}${att.memo ? ' / '+att.memo : ''}` }
+        });
+        const stuArr2 = await findStudentByName(studentName);
+        if (!stuArr2.length) return { success: false, error: '학생 없음' };
+        const stu2 = stuArr2[0];
+        const used2 = Math.max(0, (stu2.used_sessions||0) - 1);
+        const total2 = stu2.total_sessions||0;
+        const remaining2 = Math.max(0, total2 - used2);
+        await sbQuery(`students?id=eq.${stu2.id}`, {
+          method: 'PATCH',
+          body: { used_sessions: used2, remaining: remaining2, need_payment: remaining2 <= 0 }
+        });
+        return { success: true, message: `${studentName} 출결 취소 완료 (잔여 ${remaining2}회)` };
+      }
+
       // ── 결제 처리
       case 'addPayment': {
         const d = params;
@@ -3371,7 +3396,7 @@ function renderStats() {
   // ── 결제 필요
   const needPay      = students.filter(s => s.needPayment && s.status !== '퇴원');
   // ── 이번달 수업 횟수
-  const monthAtt     = attendance.filter(a => a.classDate && a.classDate.startsWith(ym));
+  const monthAtt     = attendance.filter(a => a.classDate && a.classDate.startsWith(ym) && !(a.memo||'').startsWith('[취소]'));
   // ── 전월 수업 횟수
   const prevAtt      = attendance.filter(a => a.classDate && a.classDate.startsWith(prevYm));
   const attChange    = monthAtt.length - prevAtt.length;
@@ -3613,7 +3638,8 @@ function renderSalary() {
   const teachers = sdTeachers();
   const attendance = sdAttendance();
   const students = sdStudents();
-  const monthAtt = attendance.filter(a => a.classDate && a.classDate.startsWith(ym));
+  // 취소된 출결 제외 (급여 정산은 유효한 출결만)
+  const monthAtt = attendance.filter(a => a.classDate && a.classDate.startsWith(ym) && !(a.memo||'').startsWith('[취소]'));
 
   // 학생 이름 → 유형 맵
   const typeMap = {};
@@ -4233,46 +4259,63 @@ function renderTeacherHistory() {
 
     // 보유 회차만큼 박스, 사용 횟수만큼 체크
     // 사용 내역 중 결석 여부 파악 (최근 used개)
-    // 유효 출결만 (취소 제외, 결제일 이후, 오름차순)
+    // 유효 출결 목록 (취소 제외, 결제일 이후, 날짜 오름차순)
     const payDateForAtt = s?.paymentDate || '';
-    const attList = sdAttendance()
+    const validAtts = sdAttendance()
       .filter(a => a.studentName === name &&
                    !(a.memo||'').startsWith('[취소]') &&
-                   (!(payDateForAtt) || (a.classDate||'').slice(0,10) >= payDateForAtt))
+                   (!payDateForAtt || (a.classDate||'').slice(0,10) >= payDateForAtt))
       .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
 
+    const realUsed = validAtts.length; // 실제 유효 출결 수
+
     let boxes = '';
-    for (let i = 0; i < total; i++) {
-      if (i < used) {
-        const a = attList[i];
-        const isAbs = a?.memo === '당일결석';
-        const borderColor = isAbs ? 'var(--warning)' : 'var(--success)';
-        const bg          = isAbs ? 'rgba(255,165,0,0.18)' : 'rgba(0,200,100,0.15)';
-        const icon        = isAbs ? '⚠' : '✓';
-        const iconColor   = isAbs ? 'var(--warning)' : 'var(--success)';
-        // 날짜: classDate에서 월/일 추출 (예: 3/21)
-        const rawDate  = a?.classDate || '';
+
+    if (total === 0) {
+      boxes = `<span style="font-size:11px;color:var(--text3);">수강권 없음</span>`;
+    } else {
+      // 수강권 범위 내 박스
+      for (let i = 0; i < total; i++) {
+        const a = validAtts[i]; // i번째 유효 출결
+        if (a) {
+          const isAbs = a.memo === '당일결석';
+          const borderColor = isAbs ? 'var(--warning)' : 'var(--success)';
+          const bg = isAbs ? 'rgba(255,165,0,0.18)' : 'rgba(0,200,100,0.15)';
+          const icon = isAbs ? '⚠' : '✓';
+          const iconColor = isAbs ? 'var(--warning)' : 'var(--success)';
+          const rawDate = a.classDate || '';
+          const dateLabel = rawDate
+            ? (parseInt(rawDate.slice(5,7)) + '/' + parseInt(rawDate.slice(8,10)))
+            : '';
+          boxes += `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;">
+            <div style="width:22px;height:22px;border-radius:4px;border:2px solid ${borderColor};
+              background:${bg};display:flex;align-items:center;justify-content:center;
+              font-size:11px;color:${iconColor};font-weight:900;">${icon}</div>
+            <div style="font-size:9px;color:var(--text3);white-space:nowrap;line-height:1.2;">${dateLabel}</div>
+          </div>`;
+        } else {
+          // 빈 박스 (아직 수업 안 한 회차)
+          boxes += `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;">
+            <div style="width:22px;height:22px;border-radius:4px;
+              border:2px solid var(--border2);background:transparent;"></div>
+            <div style="font-size:9px;color:transparent;line-height:1.2;">-</div>
+          </div>`;
+        }
+      }
+      // 수강권 초과 출결 → 빨간 박스
+      for (let i = total; i < realUsed; i++) {
+        const a = validAtts[i];
+        const rawDate = a?.classDate || '';
         const dateLabel = rawDate
           ? (parseInt(rawDate.slice(5,7)) + '/' + parseInt(rawDate.slice(8,10)))
           : '';
         boxes += `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;">
-          <div style="width:22px;height:22px;border-radius:4px;border:2px solid ${borderColor};
-            background:${bg};display:flex;align-items:center;justify-content:center;
-            font-size:11px;color:${iconColor};font-weight:900;">${icon}</div>
-          <div style="font-size:9px;color:var(--text3);white-space:nowrap;line-height:1.2;">${dateLabel}</div>
-        </div>`;
-      } else {
-        // 미사용 빈 박스 (날짜 자리 유지로 정렬 일치)
-        boxes += `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;">
-          <div style="width:22px;height:22px;border-radius:4px;
-            border:2px solid var(--border2);background:transparent;"></div>
-          <div style="font-size:9px;color:transparent;line-height:1.2;">-</div>
+          <div style="width:22px;height:22px;border-radius:4px;border:2px solid var(--danger);
+            background:rgba(255,59,48,0.15);display:flex;align-items:center;justify-content:center;
+            font-size:11px;color:var(--danger);font-weight:900;">+</div>
+          <div style="font-size:9px;color:var(--danger);white-space:nowrap;line-height:1.2;">${dateLabel}</div>
         </div>`;
       }
-    }
-    // 보유 회차 0이면 안내 표시
-    if (total === 0) {
-      boxes = `<span style="font-size:11px;color:var(--text3);">수강권 없음</span>`;
     }
 
     return `<div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:12px 14px;">
@@ -5246,10 +5289,17 @@ function renderAttLog() {
   const wrap = document.getElementById('attlog-content');
   if (!wrap) return;
 
-  // 필터값
+  // 기본값: 1주일 이내 (dateFrom이 비어있으면 자동 설정)
+  const dateFromEl = document.getElementById('attlog-date-from');
+  const dateToEl   = document.getElementById('attlog-date-to');
+  if (dateFromEl && !dateFromEl.value) {
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    dateFromEl.value = oneWeekAgo.toISOString().slice(0,10);
+  }
   const filterTeacher = document.getElementById('attlog-teacher-filter')?.value || '';
-  const dateFrom      = document.getElementById('attlog-date-from')?.value || '';
-  const dateTo        = document.getElementById('attlog-date-to')?.value || '';
+  const dateFrom      = dateFromEl?.value || '';
+  const dateTo        = dateToEl?.value || '';
 
   // 선생님 드롭다운 채우기
   const tSel = document.getElementById('attlog-teacher-filter');
@@ -5326,12 +5376,17 @@ function renderAttLog() {
       const absentBadge = a.memo === '당일결석'
         ? `<span style="font-size:10px;color:var(--warning);border:1px solid var(--warning);border-radius:6px;padding:1px 5px;margin-left:4px;">결석</span>`
         : '';
+      // 취소 버튼 (취소 안 된 건만)
+      const cancelBtn = !isCancelled
+        ? `<button class="btn btn-danger btn-xs" onclick="adminCancelAttendance(${a.rowIndex},'${a.studentName}')">취소</button>`
+        : '';
       return `<tr style="${rowStyle}">
         <td style="white-space:nowrap;">${a.studentName}${cancelBadge}${absentBadge}</td>
         <td style="white-space:nowrap;color:var(--accent);">${classDay} (${dayOfWeek})</td>
         <td style="white-space:nowrap;color:var(--text2);font-size:12px;">${checkTime}</td>
         <td style="color:var(--primary);font-weight:700;">${cumUsed}/${total}회</td>
         <td style="white-space:nowrap;color:var(--text2);">${payDate}</td>
+        <td>${cancelBtn}</td>
       </tr>`;
     }).join('');
 
@@ -5345,7 +5400,7 @@ function renderAttLog() {
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>학생</th><th>수업일 (요일)</th><th>체크 시각</th><th>잔여/총횟수</th><th>최근 결제일</th>
+              <th>학생</th><th>수업일 (요일)</th><th>체크 시각</th><th>잔여/총횟수</th><th>최근 결제일</th><th></th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -5361,9 +5416,24 @@ function resetAttLogFilter() {
   const from = document.getElementById('attlog-date-from');
   const to   = document.getElementById('attlog-date-to');
   if (tSel) tSel.value = '';
-  if (from) from.value = '';
+  if (from) from.value = ''; // 초기화하면 renderAttLog에서 1주일로 자동 설정됨
   if (to)   to.value   = '';
   renderAttLog();
+}
+
+// 관리자 출석 취소
+function adminCancelAttendance(attRowIndex, studentName) {
+  if (!confirm(`"${studentName}" 학생의 출결을 취소하시겠습니까?
+수강 횟수 1회가 복원됩니다.`)) return;
+  showLoading(true);
+  callAPI('cancelAttendanceById', { attRowIndex, studentName })
+    .then(r => {
+      showLoading(false);
+      if (r.success) {
+        showToast(r.message || '취소 완료', 'success');
+        loadData();
+      } else showToast(r.error || '취소 실패', 'error');
+    }).catch(onError);
 }
 
 // ============================================================
