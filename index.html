@@ -1814,7 +1814,7 @@ async function sbQuery(path, options = {}) {
 
 // 이름으로 학생 찾기 헬퍼 (특수문자 처리)
 async function findStudentByName(name) {
-  const res = await sbQuery(`students?select=*&name=eq.${name}`);
+  const res = await sbQuery(`students?name=eq.${name}&select=*`);
   return Array.isArray(res) ? res : [];
 }
 
