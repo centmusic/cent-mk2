@@ -3930,9 +3930,7 @@ function renderTodayClasses() {
     return;
   }
 
-  const makeCard = ({ name, time, student: _s }) => {
-    // student가 undefined이면 이름으로 다시 찾기
-    const s = _s || sdStudents().find(st => st.name === name);
+  const makeCard = ({ name, time, student: s }) => {
     const todayCount = todayAttendance.filter(n => n === name).length;
     const checked = todayCount > 0;
     const pct = s && s.totalSessions > 0 ? Math.round((s.usedSessions / s.totalSessions) * 100) : 0;
@@ -3941,17 +3939,13 @@ function renderTodayClasses() {
       ? `<span class="badge badge-결제필요" style="font-size:12px;padding:2px 8px;">결제필요</span>` : '';
     const doneBadge = checked
       ? `<span class="done-badge">✓ ${todayCount}회</span>` : '';
-    const progressHtml = s
+    const progressHtml = s && s.totalSessions > 0
       ? `<div class="progress-wrap">
           <div class="progress-bar">
             <div class="progress-fill" style="width:${Math.min(pct,100)}%;background:${color}"></div>
           </div>
-          <div class="progress-text" style="color:${color}">${s.usedSessions||0}/${s.totalSessions||0}회</div>
-        </div>`
-      : `<div class="progress-wrap">
-          <div class="progress-bar"><div class="progress-fill" style="width:0%;background:var(--border2)"></div></div>
-          <div class="progress-text" style="color:var(--text3)">정보 없음</div>
-        </div>`;
+          <div class="progress-text" style="color:${color}">${s.usedSessions}/${s.totalSessions}회</div>
+        </div>` : '';
     const cancelBtn = checked
       ? `<button class="btn btn-danger" onclick='doCancelAttendance("${name}")'>↩ 취소</button>` : '';
     return `<div class="today-class-card" data-name="${name}">
@@ -3959,7 +3953,7 @@ function renderTodayClasses() {
         <div class="t-card-emoji">${checked ? '✅' : '🎵'}</div>
         <div class="t-card-info">
           <div class="today-class-name">${name} ${payBadge} ${doneBadge}</div>
-
+          <div class="today-class-meta">🕐 ${time || '시간표 미지정'}</div>
           ${progressHtml}
         </div>
       </div>
@@ -5369,10 +5363,22 @@ function renderAttLog() {
       const dayOfWeek = classDay !== '—'
         ? DAY_KR[new Date(classDay).getDay()] + '요일'
         : '—';
-      // 현재 사용횟수/총횟수 (출결 바와 동일한 방식)
-      const cumUsed  = s.usedSessions !== undefined ? s.usedSessions : '—';
+      // 결제일 이후 유효 출결 기준 회차 계산
+      const payDate  = s.paymentDate || '';
       const total    = s.totalSessions || '—';
-      const payDate  = s.paymentDate  || '—';
+      let cumUsed = '—';
+      if (s && payDate) {
+        const validAfterPay = sdAttendance().filter(att =>
+          att.studentName === a.studentName &&
+          !(att.memo||'').startsWith('[취소]') &&
+          (att.classDate||'').slice(0,10) >= payDate
+        ).sort((x,y) => (x.classDate||'').localeCompare(y.classDate||''));
+        const idx = validAfterPay.findIndex(att => att.rowIndex === a.rowIndex);
+        cumUsed = idx >= 0 ? idx + 1 : '—';
+      } else if (s) {
+        cumUsed = s.usedSessions || '—';
+      }
+      const payDateDisplay = payDate || '—';
       const rowStyle    = isCancelled ? 'opacity:0.45;' : '';
       const cancelBadge = isCancelled
         ? `<span style="font-size:10px;color:var(--danger);border:1px solid var(--danger);border-radius:6px;padding:1px 5px;margin-left:4px;">취소</span>`
@@ -5385,11 +5391,14 @@ function renderAttLog() {
         ? `<button class="btn btn-danger btn-xs" onclick="adminCancelAttendance(${a.rowIndex},'${a.studentName}')">취소</button>`
         : '';
       return `<tr style="${rowStyle}">
-        <td style="white-space:nowrap;">${a.studentName}${cancelBadge}${absentBadge}</td>
+        <td style="white-space:nowrap;">
+          <span style="cursor:pointer;color:var(--primary);text-decoration:underline;"
+            onclick="showStudentAttHistory('${a.studentName}')">${a.studentName}</span>${cancelBadge}${absentBadge}
+        </td>
         <td style="white-space:nowrap;color:var(--accent);">${classDay} (${dayOfWeek})</td>
         <td style="white-space:nowrap;color:var(--text2);font-size:12px;">${checkTime}</td>
         <td style="color:var(--primary);font-weight:700;">총 ${total}회중 ${cumUsed}회차 수업</td>
-        <td style="white-space:nowrap;color:var(--text2);">${payDate}</td>
+        <td style="white-space:nowrap;color:var(--text2);">${payDateDisplay}</td>
         <td>${cancelBtn}</td>
       </tr>`;
     }).join('');
@@ -5413,6 +5422,81 @@ function renderAttLog() {
   });
 
   wrap.innerHTML = `<div style="font-size:12px;color:var(--text2);margin-bottom:12px;">총 ${logs.length}건</div>` + html;
+}
+
+// 학생 이번 수강권 이력 팝업 (컴플레인 대응용)
+function showStudentAttHistory(studentName) {
+  const s = sdStudents().find(st => st.name === studentName);
+  if (!s) return;
+
+  const payDate = s.paymentDate || '';
+  const total   = s.totalSessions || 0;
+  const DAY_KR  = ['일','월','화','수','목','금','토'];
+
+  // 결제일 이후 전체 출결 (취소 포함, 날짜순)
+  const allAtts = sdAttendance()
+    .filter(a => a.studentName === studentName && (!payDate || (a.classDate||'').slice(0,10) >= payDate))
+    .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
+
+  // 유효 출결만 추려서 회차 계산
+  const validAtts = allAtts.filter(a => !(a.memo||'').startsWith('[취소]'));
+
+  let rows = '';
+  let validIdx = 0;
+  allAtts.forEach(a => {
+    const isCancelled = (a.memo||'').startsWith('[취소]');
+    const isAbsent    = a.memo === '당일결석';
+    const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
+    const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
+    const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
+
+    let badge = '';
+    let numCell = '';
+    if (isCancelled) {
+      badge = `<span style="font-size:10px;color:var(--danger);border:1px solid var(--danger);
+        border-radius:5px;padding:1px 5px;">취소</span>`;
+      numCell = `<span style="color:var(--text3);">—</span>`;
+    } else {
+      validIdx++;
+      const overLimit = total > 0 && validIdx > total;
+      const numColor = overLimit ? 'var(--danger)' : 'var(--primary)';
+      numCell = `<b style="color:${numColor};">${validIdx}회차</b>`;
+      if (isAbsent) badge = `<span style="font-size:10px;color:var(--warning);border:1px solid var(--warning);
+        border-radius:5px;padding:1px 5px;">결석</span>`;
+    }
+
+    rows += `<tr style="${isCancelled ? 'opacity:0.5;' : ''}">
+      <td style="text-align:center;">${numCell}</td>
+      <td style="white-space:nowrap;">${classDay} (${dow})</td>
+      <td style="color:var(--text2);font-size:12px;">${timeStr}</td>
+      <td>${a.teacherName||'—'} ${badge}</td>
+    </tr>`;
+  });
+
+  if (!rows) {
+    rows = `<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px;">
+      이번 수강권 수업 이력이 없습니다</td></tr>`;
+  }
+
+  const payDateLabel = payDate
+    ? `결제일 ${payDate} 이후 · 총 ${total}회권 · 현재 ${validIdx}회 진행`
+    : `총 ${total}회권 · 현재 ${validIdx}회 진행`;
+
+  document.getElementById('modal-title').textContent = `📋 ${studentName} - 이번 수강권 수업 이력`;
+  document.getElementById('modal-body').innerHTML = `
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;padding:8px 12px;
+      background:var(--surface);border-radius:8px;">${payDateLabel}</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="text-align:center;">회차</th><th>수업일</th><th>시각</th><th>선생님</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  document.getElementById('modal-footer').innerHTML =
+    `<button class="btn btn-secondary" onclick="closeModal()">닫기</button>`;
+  openModal();
 }
 
 function resetAttLogFilter() {
