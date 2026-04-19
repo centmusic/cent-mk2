@@ -3930,7 +3930,9 @@ function renderTodayClasses() {
     return;
   }
 
-  const makeCard = ({ name, time, student: s }) => {
+  const makeCard = ({ name, time, student: _s }) => {
+    // student가 undefined이면 이름으로 다시 찾기
+    const s = _s || sdStudents().find(st => st.name === name);
     const todayCount = todayAttendance.filter(n => n === name).length;
     const checked = todayCount > 0;
     const pct = s && s.totalSessions > 0 ? Math.round((s.usedSessions / s.totalSessions) * 100) : 0;
@@ -4024,10 +4026,15 @@ function renderTodayClasses() {
 
 // 일괄 출결 전체선택 토글
 function filterStudentCards() {
-  const q = (document.getElementById('student-search')?.value || '').toLowerCase();
-  document.querySelectorAll('.today-class-card').forEach(card => {
+  // 검색창은 today-classes-wrap 안에 있으므로 그 안의 카드만 대상
+  const q = (document.getElementById('student-search')?.value || '').toLowerCase().trim();
+  document.querySelectorAll('#today-classes-wrap .today-class-card').forEach(card => {
     const name = (card.dataset.name || '').toLowerCase();
     card.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+  // section-divider도 숨기기 처리
+  document.querySelectorAll('#today-classes-wrap .section-divider').forEach(div => {
+    div.style.display = '';
   });
 }
 
@@ -5377,7 +5384,7 @@ function renderAttLog() {
         <td style="white-space:nowrap;">${a.studentName}${cancelBadge}${absentBadge}</td>
         <td style="white-space:nowrap;color:var(--accent);">${classDay} (${dayOfWeek})</td>
         <td style="white-space:nowrap;color:var(--text2);font-size:12px;">${checkTime}</td>
-        <td style="color:var(--primary);font-weight:700;">${cumUsed}/${total}회</td>
+        <td style="color:var(--primary);font-weight:700;">총 ${total}회중 ${cumUsed}회차 수업</td>
         <td style="white-space:nowrap;color:var(--text2);">${payDate}</td>
         <td>${cancelBtn}</td>
       </tr>`;
@@ -5393,7 +5400,7 @@ function renderAttLog() {
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>학생</th><th>수업일 (요일)</th><th>체크 시각</th><th>잔여/총횟수</th><th>최근 결제일</th><th></th>
+              <th>학생</th><th>수업일 (요일)</th><th>체크 시각</th><th>수업 회차</th><th>최근 결제일</th><th></th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
