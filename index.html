@@ -1868,6 +1868,17 @@ async function sbCallFn(fn, params) {
           sbQuery('memos', { select: '*', order: 'created_at.desc' }),
           sbQuery('payments', { select: '*', order: 'payment_date.desc' }),
         ]);
+        // 학생의 payment_date가 비어있으면 payments 테이블의 최근 결제일로 보완
+        const latestPaymentMap = {};
+        (Array.isArray(payments) ? payments : []).forEach(p => {
+          if (p.is_cancelled) return;
+          const name = p.student_name;
+          const pd   = fmtDate(p.payment_date);
+          if (pd && (!latestPaymentMap[name] || pd > latestPaymentMap[name])) {
+            latestPaymentMap[name] = pd;
+          }
+        });
+
         return {
           students: students.map(s => ({
             rowIndex: s.id,
@@ -1875,7 +1886,9 @@ async function sbCallFn(fn, params) {
             teacher: s.teacher||'', packageType: s.package_type||'',
             totalSessions: s.total_sessions||0, usedSessions: s.used_sessions||0,
             remaining: s.remaining||0, needPayment: !!s.need_payment,
-            paymentDate: fmtDate(s.payment_date), memo: s.memo||'',
+            // payment_date 비어있으면 payments 테이블에서 보완
+            paymentDate: fmtDate(s.payment_date) || latestPaymentMap[s.name] || '',
+            memo: s.memo||'',
             createdAt: fmtDate(s.created_at), school: s.school||'',
             age: String(s.age||''), address: s.address||'', joinRoute: s.join_route||'',
             parentPhone: fixPhone(s.parent_phone),
@@ -3935,12 +3948,12 @@ function renderTodayClasses() {
         </div>` : '';
     const cancelBtn = checked
       ? `<button class="btn btn-danger" onclick='doCancelAttendance("${name}")'>↩ 취소</button>` : '';
-    return `<div class="today-class-card">
+    return `<div class="today-class-card" data-name="${name}">
       <div class="today-class-card-top">
         <div class="t-card-emoji">${checked ? '✅' : '🎵'}</div>
         <div class="t-card-info">
           <div class="today-class-name">${name} ${payBadge} ${doneBadge}</div>
-          <div class="today-class-meta">🕐 ${time || '시간표 미지정'}</div>
+
           ${progressHtml}
         </div>
       </div>
@@ -3959,6 +3972,11 @@ function renderTodayClasses() {
 
   // ── 일괄 출결 바
   const batchBar = allStudents.length > 0 ? `
+    <div style="margin-bottom:10px;">
+      <input type="text" id="student-search" placeholder="🔍 학생 이름 검색..."
+        class="form-control" oninput="filterStudentCards()"
+        style="font-size:14px;">
+    </div>
     <div id="batch-bar" style="background:var(--card);border:1.5px solid var(--border2);border-radius:12px;
       padding:12px 14px;margin-bottom:14px;">
       <div style="font-size:13px;font-weight:800;color:var(--text2);margin-bottom:10px;">
@@ -4005,6 +4023,14 @@ function renderTodayClasses() {
 }
 
 // 일괄 출결 전체선택 토글
+function filterStudentCards() {
+  const q = (document.getElementById('student-search')?.value || '').toLowerCase();
+  document.querySelectorAll('.today-class-card').forEach(card => {
+    const name = (card.dataset.name || '').toLowerCase();
+    card.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+}
+
 function toggleBatchAll() {
   const chks = document.querySelectorAll('.batch-chk');
   const allChecked = Array.from(chks).every(c => c.checked);
@@ -4043,6 +4069,8 @@ function doBatchAttendance() {
           });
         }
       });
+      // 완료 후 체크박스 초기화
+      document.querySelectorAll('.batch-chk').forEach(c => { c.checked = false; });
       renderTodayClasses();
     } else showToast(r.error || '일괄 출결 실패', 'error');
   }).catch(onError);
@@ -5330,8 +5358,8 @@ function renderAttLog() {
       const dayOfWeek = classDay !== '—'
         ? DAY_KR[new Date(classDay).getDay()] + '요일'
         : '—';
-      // 출결 당시 누적 횟수 표시 (컴플레인 대응용)
-      const cumUsed  = a._cumUsed || '—';
+      // 현재 사용횟수/총횟수 (출결 바와 동일한 방식)
+      const cumUsed  = s.usedSessions !== undefined ? s.usedSessions : '—';
       const total    = s.totalSessions || '—';
       const payDate  = s.paymentDate  || '—';
       const rowStyle    = isCancelled ? 'opacity:0.45;' : '';
