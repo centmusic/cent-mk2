@@ -3941,13 +3941,17 @@ function renderTodayClasses() {
       ? `<span class="badge badge-결제필요" style="font-size:12px;padding:2px 8px;">결제필요</span>` : '';
     const doneBadge = checked
       ? `<span class="done-badge">✓ ${todayCount}회</span>` : '';
-    const progressHtml = s && s.totalSessions > 0
+    const progressHtml = s
       ? `<div class="progress-wrap">
           <div class="progress-bar">
             <div class="progress-fill" style="width:${Math.min(pct,100)}%;background:${color}"></div>
           </div>
-          <div class="progress-text" style="color:${color}">${s.usedSessions}/${s.totalSessions}회</div>
-        </div>` : '';
+          <div class="progress-text" style="color:${color}">${s.usedSessions||0}/${s.totalSessions||0}회</div>
+        </div>`
+      : `<div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" style="width:0%;background:var(--border2)"></div></div>
+          <div class="progress-text" style="color:var(--text3)">정보 없음</div>
+        </div>`;
     const cancelBtn = checked
       ? `<button class="btn btn-danger" onclick='doCancelAttendance("${name}")'>↩ 취소</button>` : '';
     return `<div class="today-class-card" data-name="${name}">
