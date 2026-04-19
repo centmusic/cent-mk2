@@ -5363,20 +5363,19 @@ function renderAttLog() {
       const dayOfWeek = classDay !== '—'
         ? DAY_KR[new Date(classDay).getDay()] + '요일'
         : '—';
-      // 결제일 이후 유효 출결 기준 회차 계산
+      // 4/1 이후 출결 기준 회차 계산 (앱 도입일 기준)
+      const APP_START = '2026-04-01';
       const payDate  = s.paymentDate || '';
       const total    = s.totalSessions || '—';
       let cumUsed = '—';
-      if (s && payDate) {
-        const validAfterPay = sdAttendance().filter(att =>
+      if (s) {
+        const validAfterStart = sdAttendance().filter(att =>
           att.studentName === a.studentName &&
           !(att.memo||'').startsWith('[취소]') &&
-          (att.classDate||'').slice(0,10) >= payDate
+          (att.classDate||'').slice(0,10) >= APP_START
         ).sort((x,y) => (x.classDate||'').localeCompare(y.classDate||''));
-        const idx = validAfterPay.findIndex(att => att.rowIndex === a.rowIndex);
+        const idx = validAfterStart.findIndex(att => att.rowIndex === a.rowIndex);
         cumUsed = idx >= 0 ? idx + 1 : '—';
-      } else if (s) {
-        cumUsed = s.usedSessions || '—';
       }
       const payDateDisplay = payDate || '—';
       const rowStyle    = isCancelled ? 'opacity:0.45;' : '';
@@ -5433,9 +5432,10 @@ function showStudentAttHistory(studentName) {
   const total   = s.totalSessions || 0;
   const DAY_KR  = ['일','월','화','수','목','금','토'];
 
-  // 결제일 이후 전체 출결 (취소 포함, 날짜순)
+  // 4/1 이후 출결만 (앱 도입일 기준, 날짜순)
+  const APP_START_DATE = '2026-04-01';
   const allAtts = sdAttendance()
-    .filter(a => a.studentName === studentName && (!payDate || (a.classDate||'').slice(0,10) >= payDate))
+    .filter(a => a.studentName === studentName && (a.classDate||'').slice(0,10) >= APP_START_DATE)
     .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
 
   // 유효 출결만 추려서 회차 계산
@@ -5478,9 +5478,7 @@ function showStudentAttHistory(studentName) {
       이번 수강권 수업 이력이 없습니다</td></tr>`;
   }
 
-  const payDateLabel = payDate
-    ? `결제일 ${payDate} 이후 · 총 ${total}회권 · 현재 ${validIdx}회 진행`
-    : `총 ${total}회권 · 현재 ${validIdx}회 진행`;
+  const payDateLabel = `앱 도입(4월) 이후 기준 · 총 ${total}회권 · ${validIdx}회 진행`;
 
   document.getElementById('modal-title').textContent = `📋 ${studentName} - 이번 수강권 수업 이력`;
   document.getElementById('modal-body').innerHTML = `
