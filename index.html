@@ -2274,45 +2274,40 @@ async function sbCallFn(fn, params) {
         return { success: true, students: mappedStudents, overdueStudents: [], history: mappedHistory };
       }
 
-      // ── SMS 발송
+      // ── SMS 발송 (Supabase Edge Function 경유)
       case 'sendManualSMS': {
         const { receivers, msg } = params;
         if (!receivers?.length) return { success: false, error: '수신자 없음' };
-        let successCount = 0;
-        for (const r of receivers) {
-          try {
-            const date = new Date().toISOString();
-            const salt = Math.random().toString(36).slice(2);
-            // 솔라피 직접 호출
-            const smsRes = await fetch('https://api.solapi.com/messages/v4/send-many', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `HMAC-SHA256 apiKey=NCSEP13WDYD61OYY, date=${date}, salt=${salt}, signature=placeholder`
-              },
-              body: JSON.stringify({ messages: [{ to: r.phone.replace(/[^0-9]/g,''), from: '01024828269', text: msg, type: msg.length > 90 ? 'LMS' : 'SMS' }] })
-            });
-            const result = await smsRes.json();
-            const ok = smsRes.ok && result.errorCount === 0;
-            // 발송 이력 저장
-            await sbQuery('sms_logs', {
-              method: 'POST',
-              body: {
-                student_name: r.name, receiver: r.phone,
-                message: msg, result: ok ? '성공' : '실패: ' + (result.errorMessage||'')
-              }
-            });
-            if (ok) successCount++;
-          } catch(e) {
-            await sbQuery('sms_logs', {
-              method: 'POST',
-              body: { student_name: r.name, receiver: r.phone, message: msg, result: '실패: ' + e.message }
-            });
+
+        // Edge Function 호출
+        const edgeRes = await fetch(
+          `${SUPABASE_URL}/functions/v1/send-sms`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({ receivers, msg })
           }
+        );
+        const result = await edgeRes.json();
+
+        // 발송 이력 저장 (수신자별)
+        for (const r of receivers) {
+          await sbQuery('sms_logs', {
+            method: 'POST',
+            body: {
+              student_name: r.name, receiver: r.phone,
+              message: msg,
+              result: result.success ? '성공' : '실패: ' + (result.error || '')
+            }
+          });
         }
+
         return {
-          success: successCount > 0,
-          message: `✅ ${successCount}/${receivers.length}명 발송`
+          success: result.success,
+          message: result.message || `✅ ${result.successCount || 0}/${receivers.length}명 발송 완료`
         };
       }
 
