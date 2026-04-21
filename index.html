@@ -4206,8 +4206,7 @@ function renderTeacherHistory() {
     sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
   );
   const myAtt = sdAttendance().filter(a =>
-    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym) &&
-    !(a.memo||'').startsWith('[취소]')
+    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym)
   );
   const total = myAtt.length;
   const absentCount = myAtt.filter(a => a.memo === '당일결석').length;
