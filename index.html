@@ -1838,19 +1838,28 @@ function fmtDateTime(v) {
   if (!v) return '';
   try {
     const d = new Date(v);
-    return d.getFullYear() + '-' +
-      String(d.getMonth()+1).padStart(2,'0') + '-' +
-      String(d.getDate()).padStart(2,'0') + ' ' +
-      String(d.getHours()).padStart(2,'0') + ':' +
-      String(d.getMinutes()).padStart(2,'0');
+    // KST (UTC+9) 기준으로 변환
+    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    return kst.getUTCFullYear() + '-' +
+      String(kst.getUTCMonth()+1).padStart(2,'0') + '-' +
+      String(kst.getUTCDate()).padStart(2,'0') + ' ' +
+      String(kst.getUTCHours()).padStart(2,'0') + ':' +
+      String(kst.getUTCMinutes()).padStart(2,'0');
   } catch(e) { return ''; }
 }
 function fixPhone(v) {
   if (!v) return '';
+  // 숫자만 추출
   const s = String(v).trim().replace(/[^0-9]/g,'');
+  if (!s) return '';
+  // 9자리: 0 + 9 = 10자리 (지역번호 등)
   if (s.length === 9 && !s.startsWith('0')) return '0' + s;
+  // 10자리: 앞에 0 없으면 추가
   if (s.length === 10 && !s.startsWith('0')) return '0' + s;
-  return String(v).trim();
+  // 11자리 정상 (01012345678)
+  if (s.length === 11) return s;
+  // 그 외 숫자만 반환
+  return s;
 }
 
 // ── 모든 API 함수
@@ -2293,14 +2302,16 @@ async function sbCallFn(fn, params) {
         );
         const result = await edgeRes.json();
 
-        // 발송 이력 저장 (수신자별)
+        // 발송 이력 저장 (개별 결과 반영)
+        const resultList = result.resultList || [];
         for (const r of receivers) {
+          const individual = resultList.find((x: any) => x.name === r.name) || {};
           await sbQuery('sms_logs', {
             method: 'POST',
             body: {
               student_name: r.name, receiver: r.phone,
               message: msg,
-              result: result.success ? '성공' : '실패: ' + (result.error || '')
+              result: individual.result || (result.success ? '성공' : '실패')
             }
           });
         }
@@ -4197,7 +4208,8 @@ function renderTeacherHistory() {
     sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
   );
   const myAtt = sdAttendance().filter(a =>
-    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym)
+    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym) &&
+    !(a.memo||'').startsWith('[취소]')
   );
   const total = myAtt.length;
   const absentCount = myAtt.filter(a => a.memo === '당일결석').length;
