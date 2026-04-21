@@ -2303,7 +2303,7 @@ async function sbCallFn(fn, params) {
         // 발송 이력 저장 (개별 결과 반영)
         const resultList = result.resultList || [];
         for (const r of receivers) {
-          const individual = resultList.find((x: any) => x.name === r.name) || {};
+          const individual = resultList.find((x) => x.name === r.name) || {};
           await sbQuery('sms_logs', {
             method: 'POST',
             body: {
