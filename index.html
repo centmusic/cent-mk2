@@ -2008,7 +2008,10 @@ async function sbCallFn(fn, params) {
       // ── 출결 체크
       case 'checkAttendance': {
         const d = params;
-        const now = d.classDate ? new Date(d.classDate) : new Date();
+        // KST 기준 시간으로 저장 (UTC+9 보정)
+        const rawNow = d.classDate ? new Date(d.classDate) : new Date();
+        const kstOffset = 9 * 60 * 60 * 1000;
+        const now = new Date(rawNow.getTime() + kstOffset);
         // 학생 현재 횟수 조회
         const stuByName = await findStudentByName(d.studentName);
         if (!stuByName.length) return { success: false, error: '학생 없음' };
@@ -4206,7 +4209,8 @@ function renderTeacherHistory() {
     sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
   );
   const myAtt = sdAttendance().filter(a =>
-    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym)
+    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym) &&
+    !(a.memo||'').startsWith('[취소]')
   );
   const total = myAtt.length;
   const absentCount = myAtt.filter(a => a.memo === '당일결석').length;
