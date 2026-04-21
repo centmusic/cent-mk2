@@ -4204,17 +4204,17 @@ function renderTeacherHistory() {
   const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   document.getElementById('teacher-month-label').textContent = `${d.getFullYear()}년 ${d.getMonth()+1}월`;
 
-  // 담당 학생 기준으로 필터 (누가 체크했든 담당 학생이면 표시)
-  const myStudentSet = new Set(
-    sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
-  );
+  // 선생님명 기준으로 카운팅 (급여정산과 동일한 기준)
   const myAtt = sdAttendance().filter(a =>
-    myStudentSet.has(a.studentName) && a.classDate && a.classDate.startsWith(ym) &&
+    a.teacherName === teacherName && a.classDate && a.classDate.startsWith(ym) &&
     !(a.memo||'').startsWith('[취소]')
   );
   const total = myAtt.length;
   const absentCount = myAtt.filter(a => a.memo === '당일결석').length;
-  // 담당 학생 목록은 등록 학생 기준으로 (출결 기록 없어도 카드 표시)
+  // 담당 학생 목록은 등록 학생 기준으로 (카드 표시용)
+  const myStudentSet = new Set(
+    sdStudents().filter(s => s.teacher === teacherName && s.status === '등록').map(s => s.name)
+  );
   const studentNames = [...myStudentSet];
 
   document.getElementById('teacher-stats-wrap').innerHTML = `
