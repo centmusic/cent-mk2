@@ -1333,7 +1333,8 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     <button class="btn btn-secondary btn-sm" onclick="loadData()">🔄 새로고침</button>
   </div>
   <div class="tabs-wrap">
-    <button class="tab-btn active" onclick="showAdminTab('students')" id="tab-students">👨‍🎓 학생 관리</button>
+    <button class="tab-btn active" onclick="showAdminTab('today')" id="tab-today">📌 오늘 할 일</button>
+    <button class="tab-btn" onclick="showAdminTab('students')" id="tab-students">👨‍🎓 학생 관리</button>
     <button class="tab-btn" onclick="showAdminTab('teachers')" id="tab-teachers">👩‍🏫 선생님 관리</button>
     <button class="tab-btn" onclick="showAdminTab('timetable')" id="tab-timetable">📅 시간표</button>
     <button class="tab-btn" onclick="showAdminTab('stats')" id="tab-stats">📊 통계</button>
@@ -1343,8 +1344,13 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     <button class="tab-btn" onclick="showAdminTab('attlog')" id="tab-attlog">📋 출석 관리</button>
   </div>
 
+  <!-- TAB: 오늘 할 일 -->
+  <div class="tab-panel active" id="panel-today">
+    <div id="today-todo-wrap"></div>
+  </div>
+
   <!-- TAB: 학생 관리 -->
-  <div class="tab-panel active" id="panel-students">
+  <div class="tab-panel" id="panel-students">
     <div class="page-content">
       <div class="section-header">
         <div>
@@ -2546,6 +2552,7 @@ function onDataLoaded(data) {
     else if (state.adminTab === 'payments') renderPayments();
     else if (state.adminTab === 'sms') renderSMSTab();
     else if (state.adminTab === 'attlog') renderAttLog();
+  else if (state.adminTab === 'today') renderTodayTodo();
     else if (state.adminTab === 'stats') renderStats();
   } else if (state.currentScreen === 'teacher') {
     if (state.teacherTab === 'today') renderTodayClasses();
@@ -5292,6 +5299,163 @@ function processCancelPayment(studentName, rowIndex) {
 // ============================================================
 // 출석 관리 탭
 // ============================================================
+function renderTodayTodo() {
+  const DAY_KR = ['일','월','화','수','목','금','토'];
+  const now = new Date();
+  const todayKr = DAY_KR[now.getDay()];
+  const todayStr = now.getUTCFullYear() + '-' +
+    String(now.getUTCMonth()+1).padStart(2,'0') + '-' +
+    String(now.getUTCDate()).padStart(2,'0');
+
+  const students = sdStudents();
+  const attendance = sdAttendance();
+  const timetable = sdTimetable();
+
+  // 오늘 시간표에 있는 학생 (요일 기준)
+  const todaySlotStudents = new Set(
+    timetable.filter(t => t.dayOfWeek === todayKr && t.linkedStudent)
+             .map(t => t.linkedStudent)
+  );
+
+  // ① 결제 필요 / 곧 필요한 학생
+  const paymentNeeded = [];
+  const paymentSoon = [];
+  students.forEach(s => {
+    if (!todaySlotStudents.has(s.name)) return;
+    if (s.status !== '등록') return;
+    if (s.remaining <= 0 || s.needPayment) {
+      paymentNeeded.push(s);
+    } else if (s.remaining === 1) {
+      paymentSoon.push(s);
+    }
+  });
+
+  // ② 오늘 수업 일정 (시간순)
+  const todaySchedule = timetable
+    .filter(t => t.dayOfWeek === todayKr && t.linkedStudent)
+    .sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
+
+  // ③ 미수금 학생 (결제필요=true인데 등록 상태)
+  const unpaid = students.filter(s =>
+    s.needPayment && s.status === '등록' && todaySlotStudents.has(s.name)
+  );
+
+  // ④ 장기 미출석 학생 (14일 이상)
+  const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0,10);
+  const longAbsent = students.filter(s => {
+    if (s.status !== '등록') return false;
+    const lastAtt = attendance
+      .filter(a => a.studentName === s.name && !(a.memo||'').startsWith('[취소]'))
+      .sort((a,b) => (b.classDate||'').localeCompare(a.classDate||''))[0];
+    if (!lastAtt) return true;
+    return lastAtt.classDate.slice(0,10) < twoWeeksAgo;
+  });
+
+  // ── 렌더링
+  const sectionStyle = `margin-bottom:20px;`;
+  const cardStyle = `background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;`;
+
+  // ① 결제 필요
+  const payHtml = `
+    <div style="${sectionStyle}">
+      <div style="font-size:13px;font-weight:700;color:var(--danger);margin-bottom:8px;">
+        🔴 오늘 결제 받아야 할 학생 (${paymentNeeded.length}명)
+      </div>
+      ${paymentNeeded.length === 0
+        ? `<div style="color:var(--text3);font-size:13px;padding:8px;">없음</div>`
+        : paymentNeeded.map(s => `
+          <div style="${cardStyle}">
+            <div>
+              <b>${s.name}</b>
+              <span style="font-size:12px;color:var(--text2);margin-left:8px;">${s.teacher}</span>
+            </div>
+            <span style="font-size:12px;color:var(--danger);font-weight:700;">
+              ${s.usedSessions}/${s.totalSessions}회 완료
+            </span>
+          </div>`).join('')}
+    </div>
+
+    <div style="${sectionStyle}">
+      <div style="font-size:13px;font-weight:700;color:var(--warning);margin-bottom:8px;">
+        🟡 오늘 마지막 회차 학생 (${paymentSoon.length}명)
+      </div>
+      ${paymentSoon.length === 0
+        ? `<div style="color:var(--text3);font-size:13px;padding:8px;">없음</div>`
+        : paymentSoon.map(s => `
+          <div style="${cardStyle}">
+            <div>
+              <b>${s.name}</b>
+              <span style="font-size:12px;color:var(--text2);margin-left:8px;">${s.teacher}</span>
+            </div>
+            <span style="font-size:12px;color:var(--warning);font-weight:700;">
+              잔여 ${s.remaining}회 (다음 결제 안내)
+            </span>
+          </div>`).join('')}
+    </div>`;
+
+  // ② 오늘 수업 일정
+  const scheduleHtml = `
+    <div style="${sectionStyle}">
+      <div style="font-size:13px;font-weight:700;color:var(--primary);margin-bottom:8px;">
+        📅 오늘 수업 일정 (${todayKr}요일 · ${todaySchedule.length}명)
+      </div>
+      ${todaySchedule.length === 0
+        ? `<div style="color:var(--text3);font-size:13px;padding:8px;">오늘 수업 없음</div>`
+        : todaySchedule.map(t => {
+            const s = students.find(st => st.name === t.linkedStudent);
+            const checked = attendance.some(a =>
+              a.studentName === t.linkedStudent &&
+              a.classDate && a.classDate.startsWith(todayStr) &&
+              !(a.memo||'').startsWith('[취소]')
+            );
+            const status = checked
+              ? `<span style="color:var(--success);font-weight:700;">✅ 출석</span>`
+              : `<span style="color:var(--text3);">미출석</span>`;
+            return `
+              <div style="${cardStyle}">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span style="font-size:12px;color:var(--accent);font-weight:700;min-width:50px;">
+                    ${t.startTime||'--'}
+                  </span>
+                  <div>
+                    <b>${t.linkedStudent}</b>
+                    <span style="font-size:12px;color:var(--text2);margin-left:6px;">${t.teacherName}</span>
+                  </div>
+                </div>
+                ${status}
+              </div>`;
+          }).join('')}
+    </div>`;
+
+  // ③ 장기 미출석
+  const absentHtml = `
+    <div style="${sectionStyle}">
+      <div style="font-size:13px;font-weight:700;color:var(--text2);margin-bottom:8px;">
+        ⚠️ 2주 이상 미출석 학생 (${longAbsent.length}명)
+      </div>
+      ${longAbsent.length === 0
+        ? `<div style="color:var(--text3);font-size:13px;padding:8px;">없음</div>`
+        : longAbsent.map(s => {
+            const lastAtt = attendance
+              .filter(a => a.studentName === s.name && !(a.memo||'').startsWith('[취소]'))
+              .sort((a,b) => (b.classDate||'').localeCompare(a.classDate||''))[0];
+            const lastDate = lastAtt ? lastAtt.classDate.slice(0,10) : '기록없음';
+            return `
+              <div style="${cardStyle}">
+                <div>
+                  <b>${s.name}</b>
+                  <span style="font-size:12px;color:var(--text2);margin-left:8px;">${s.teacher}</span>
+                </div>
+                <span style="font-size:12px;color:var(--text3);">마지막 출석: ${lastDate}</span>
+              </div>`;
+          }).join('')}
+    </div>`;
+
+  document.getElementById('today-todo-wrap').innerHTML =
+    `<div style="padding:4px 0;">${payHtml}${scheduleHtml}${absentHtml}</div>`;
+}
+
 function renderAttLog() {
   const wrap = document.getElementById('attlog-content');
   if (!wrap) return;
