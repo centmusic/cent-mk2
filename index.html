@@ -1333,7 +1333,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     <button class="btn btn-secondary btn-sm" onclick="loadData()">🔄 새로고침</button>
   </div>
   <div class="tabs-wrap">
-    <button class="tab-btn active" onclick="showAdminTab('today')" id="tab-today">📌 오늘 할 일</button>
+    <button class="tab-btn active" onclick="showAdminTab('admin-today')" id="tab-admin-today">📌 오늘 할 일</button>
     <button class="tab-btn" onclick="showAdminTab('students')" id="tab-students">👨‍🎓 학생 관리</button>
     <button class="tab-btn" onclick="showAdminTab('teachers')" id="tab-teachers">👩‍🏫 선생님 관리</button>
     <button class="tab-btn" onclick="showAdminTab('timetable')" id="tab-timetable">📅 시간표</button>
@@ -1345,7 +1345,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   </div>
 
   <!-- TAB: 오늘 할 일 -->
-  <div class="tab-panel active" id="panel-today">
+  <div class="tab-panel active" id="panel-admin-today">
     <div id="today-todo-wrap"></div>
   </div>
 
@@ -2552,7 +2552,7 @@ function onDataLoaded(data) {
     else if (state.adminTab === 'payments') renderPayments();
     else if (state.adminTab === 'sms') renderSMSTab();
     else if (state.adminTab === 'attlog') renderAttLog();
-  else if (state.adminTab === 'today') renderTodayTodo();
+  else if (state.adminTab === 'admin-today') renderTodayTodo();
     else if (state.adminTab === 'stats') renderStats();
   } else if (state.currentScreen === 'teacher') {
     if (state.teacherTab === 'today') renderTodayClasses();
@@ -2629,6 +2629,7 @@ function showAdminTab(tab) {
   else if (tab === 'payments') renderPayments();
   else if (tab === 'sms') renderSMSTab();
   else if (tab === 'attlog') renderAttLog();
+  else if (tab === 'admin-today') renderTodayTodo();
 }
 
 function showTeacherTab(tab) {
