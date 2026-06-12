@@ -1877,7 +1877,7 @@ async function sbCallFn(fn, params) {
         const [students, teachers, attendance, timetable, memos, payments] = await Promise.all([
           sbQuery('students', { select: '*', order: 'id.asc' }),
           sbQuery('teachers', { select: '*', order: 'id.asc' }),
-          sbQuery('attendance', { select: '*', order: 'class_date.asc' }),
+          sbQuery('attendance?select=*&order=class_date.asc&limit=10000', {}),
           sbQuery('timetable', { select: '*', order: 'id.asc' }),
           sbQuery('memos', { select: '*', order: 'created_at.desc' }),
           sbQuery('payments', { select: '*', order: 'payment_date.desc' }),
@@ -2274,7 +2274,7 @@ async function sbCallFn(fn, params) {
       case 'getSMSPageData': {
         const [students, history] = await Promise.all([
           sbQuery('students', { select: 'id,name,phone,status,teacher,subject,age,parent_phone,need_payment', order: 'name.asc' }),
-          sbQuery('sms_logs', { select: '*', order: 'sent_at.desc' })
+          sbQuery('sms_logs?select=*&order=sent_at.desc&limit=1000', {})
         ]);
         const mappedStudents = students.map(s => ({
           rowIndex: s.id, name: s.name||'', phone: fixPhone(s.phone),
