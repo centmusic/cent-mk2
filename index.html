@@ -1791,7 +1791,7 @@ const SUPABASE_KEY = 'sb_publishable_MhmPxLmoaJEOqD4faKmFSw_gr_5699n';
 
 // Supabase REST API 헬퍼
 async function sbQuery(path, options = {}) {
-  const { method='GET', body } = options;
+  const { method='GET', body, extraHeaders={} } = options;
   // path에 이미 필터가 포함된 형태로 호출
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
 
@@ -1799,7 +1799,8 @@ async function sbQuery(path, options = {}) {
     'apikey': SUPABASE_KEY,
     'Authorization': `Bearer ${SUPABASE_KEY}`,
     'Content-Type': 'application/json',
-    'Prefer': 'return=representation'
+    'Prefer': 'return=representation',
+    ...extraHeaders
   };
 
   const res = await fetch(url, {
@@ -1877,7 +1878,7 @@ async function sbCallFn(fn, params) {
         const [students, teachers, attendance, timetable, memos, payments] = await Promise.all([
           sbQuery('students', { select: '*', order: 'id.asc' }),
           sbQuery('teachers', { select: '*', order: 'id.asc' }),
-          sbQuery('attendance?select=*&order=class_date.asc&limit=10000', {}),
+          sbQuery('attendance?select=*&order=class_date.asc', { extraHeaders: { 'Range': '0-9999' } }),
           sbQuery('timetable', { select: '*', order: 'id.asc' }),
           sbQuery('memos', { select: '*', order: 'created_at.desc' }),
           sbQuery('payments', { select: '*', order: 'payment_date.desc' }),
