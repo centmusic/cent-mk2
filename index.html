@@ -1844,12 +1844,12 @@ function fmtDateTime(v) {
   if (!v) return '';
   try {
     const d = new Date(v);
-    // UTC 기준으로 표시 (로컬시간 변환 안 함 → 날짜 넘어가는 문제 방지)
-    return d.getUTCFullYear() + '-' +
-      String(d.getUTCMonth()+1).padStart(2,'0') + '-' +
-      String(d.getUTCDate()).padStart(2,'0') + ' ' +
-      String(d.getUTCHours()).padStart(2,'0') + ':' +
-      String(d.getUTCMinutes()).padStart(2,'0');
+    // 로컬시간(KST) 기준 → 한국 날짜로 표시
+    return d.getFullYear() + '-' +
+      String(d.getMonth()+1).padStart(2,'0') + '-' +
+      String(d.getDate()).padStart(2,'0') + ' ' +
+      String(d.getHours()).padStart(2,'0') + ':' +
+      String(d.getMinutes()).padStart(2,'0');
   } catch(e) { return ''; }
 }
 function fixPhone(v) {
@@ -3905,7 +3905,7 @@ function renderTodayClasses() {
   if (!teacherName) return;
   const todayKr = getTodayDayKr();
   const now = new Date();
-  const todayStr = now.getUTCFullYear() + '-' + String(now.getUTCMonth()+1).padStart(2,'0') + '-' + String(now.getUTCDate()).padStart(2,'0');
+  const todayStr = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
   document.getElementById('today-date-label').textContent = `${now.getFullYear()}년 ${now.getMonth()+1}월 ${now.getDate()}일 (${todayKr}요일)`;
 
   // 담당 학생 이름 목록
@@ -4108,7 +4108,7 @@ function _updateStudentLocal(studentName, updates) {
 // 오늘 날짜를 yyyy-MM-dd 형식으로 반환
 function todayStr_() {
   const n = new Date();
-  return n.getUTCFullYear() + '-' + String(n.getUTCMonth()+1).padStart(2,'0') + '-' + String(n.getUTCDate()).padStart(2,'0');
+  return n.getFullYear() + '-' + String(n.getMonth()+1).padStart(2,'0') + '-' + String(n.getDate()).padStart(2,'0');
 }
 
 function doCheckAttendance(studentName) {
@@ -5302,9 +5302,9 @@ function renderTodayTodo() {
   const DAY_KR = ['일','월','화','수','목','금','토'];
   const now = new Date();
   const todayKr = DAY_KR[now.getDay()];
-  const todayStr = now.getUTCFullYear() + '-' +
-    String(now.getUTCMonth()+1).padStart(2,'0') + '-' +
-    String(now.getUTCDate()).padStart(2,'0');
+  const todayStr = now.getFullYear() + '-' +
+    String(now.getMonth()+1).padStart(2,'0') + '-' +
+    String(now.getDate()).padStart(2,'0');
 
   const students = sdStudents();
   const attendance = sdAttendance();
