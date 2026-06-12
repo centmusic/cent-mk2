@@ -2015,10 +2015,8 @@ async function sbCallFn(fn, params) {
       // ── 출결 체크
       case 'checkAttendance': {
         const d = params;
-        // KST 기준 시간으로 저장 (UTC+9 보정)
-        const rawNow = d.classDate ? new Date(d.classDate) : new Date();
-        const kstOffset = 9 * 60 * 60 * 1000;
-        const now = new Date(rawNow.getTime() + kstOffset);
+        // UTC 그대로 저장 (fmtDateTime이 getUTC* 기준이라 일치)
+        const now = d.classDate ? new Date(d.classDate) : new Date();
         // 학생 현재 횟수 조회
         const stuByName = await findStudentByName(d.studentName);
         if (!stuByName.length) return { success: false, error: '학생 없음' };
@@ -3907,7 +3905,7 @@ function renderTodayClasses() {
   if (!teacherName) return;
   const todayKr = getTodayDayKr();
   const now = new Date();
-  const todayStr = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+  const todayStr = now.getUTCFullYear() + '-' + String(now.getUTCMonth()+1).padStart(2,'0') + '-' + String(now.getUTCDate()).padStart(2,'0');
   document.getElementById('today-date-label').textContent = `${now.getFullYear()}년 ${now.getMonth()+1}월 ${now.getDate()}일 (${todayKr}요일)`;
 
   // 담당 학생 이름 목록
@@ -4110,7 +4108,7 @@ function _updateStudentLocal(studentName, updates) {
 // 오늘 날짜를 yyyy-MM-dd 형식으로 반환
 function todayStr_() {
   const n = new Date();
-  return n.getFullYear() + '-' + String(n.getMonth()+1).padStart(2,'0') + '-' + String(n.getDate()).padStart(2,'0');
+  return n.getUTCFullYear() + '-' + String(n.getUTCMonth()+1).padStart(2,'0') + '-' + String(n.getUTCDate()).padStart(2,'0');
 }
 
 function doCheckAttendance(studentName) {
