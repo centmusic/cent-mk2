@@ -1363,7 +1363,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
       <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
         <div class="search-wrap" style="flex:1;min-width:180px;">
           <span class="search-icon">🔍</span>
-          <input type="text" class="form-control" id="student-search" placeholder="이름·담당 선생님 검색..." oninput="state.studentPage=1;renderStudents()">
+          <input type="text" class="form-control" id="student-search" placeholder="이름·담당 선생님·전화번호 검색..." oninput="state.studentPage=1;renderStudents()">
         </div>
         <div class="filter-chips" style="margin-bottom:0;">
           <div class="chip active" onclick="setStudentFilter('전체')" id="filter-전체">전체</div>
@@ -1878,7 +1878,13 @@ async function sbCallFn(fn, params) {
         const [students, teachers, attendance, timetable, memos, payments] = await Promise.all([
           sbQuery('students', { select: '*', order: 'id.asc' }),
           sbQuery('teachers', { select: '*', order: 'id.asc' }),
-          sbQuery('attendance?select=*&order=class_date.asc', { extraHeaders: { 'Range': '0-9999' } }),
+          (() => {
+            // 최근 6개월치만 가져오기 (1000건 제한 우회)
+            const sixMonthsAgo = new Date();
+            sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+            const fromDate = sixMonthsAgo.toISOString().slice(0,10);
+            return sbQuery(`attendance?select=*&order=class_date.asc&class_date=gte.${fromDate}`, {});
+          })(),
           sbQuery('timetable', { select: '*', order: 'id.asc' }),
           sbQuery('memos', { select: '*', order: 'created_at.desc' }),
           sbQuery('payments', { select: '*', order: 'payment_date.desc' }),
@@ -2678,9 +2684,22 @@ function setStudentPage(page) {
 function renderStudents() {
   const students = sdStudents();
   const search = (document.getElementById('student-search')?.value || '').toLowerCase();
+  // 검색어에서 숫자만 추출 (전화번호 검색용 - 하이픈/공백 무시)
+  const searchDigits = search.replace(/[^0-9]/g, '');
   let filtered = students.filter(s => {
     if (state.studentFilter !== '전체' && s.status !== state.studentFilter) return false;
-    if (search && !s.name.toLowerCase().includes(search) && !s.teacher.toLowerCase().includes(search)) return false;
+    if (search) {
+      const nameMatch    = s.name.toLowerCase().includes(search);
+      const teacherMatch = s.teacher.toLowerCase().includes(search);
+      // 전화번호 검색: 검색어가 숫자 2자리 이상일 때만 번호 매칭 시도 (오검색 방지)
+      let phoneMatch = false;
+      if (searchDigits.length >= 2) {
+        const studentPhoneDigits = (s.phone||'').replace(/[^0-9]/g,'');
+        const parentPhoneDigits  = (s.parentPhone||'').replace(/[^0-9]/g,'');
+        phoneMatch = studentPhoneDigits.includes(searchDigits) || parentPhoneDigits.includes(searchDigits);
+      }
+      if (!nameMatch && !teacherMatch && !phoneMatch) return false;
+    }
     return true;
   });
 
@@ -5591,72 +5610,140 @@ function showStudentAttHistory(studentName) {
   const s = sdStudents().find(st => st.name === studentName);
   if (!s) return;
 
-  const payDate = s.paymentDate || '';
-  const total   = s.totalSessions || 0;
-  const DAY_KR  = ['일','월','화','수','목','금','토'];
+  const DAY_KR = ['일','월','화','수','목','금','토'];
+  const totalNow = s.totalSessions || 0;
 
-  // 결제일 이후 출결만 표시 (결제일 없으면 전체)
-  const allAtts = sdAttendance()
-    .filter(a => a.studentName === studentName &&
-                 (!payDate || (a.classDate||'').slice(0,10) >= payDate))
+  // 학생의 전체 결제 기록 (날짜 오름차순, 취소 포함)
+  const payList = sdPayments()
+    .filter(p => p.studentName === studentName)
+    .sort((a,b) => (a.paymentDate||'').localeCompare(b.paymentDate||''));
+
+  // 학생의 전체 출결 기록 (날짜 오름차순)
+  const allAttSorted = sdAttendance()
+    .filter(a => a.studentName === studentName)
     .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
 
-  // 유효 출결만 추려서 회차 계산
-  const validAtts = allAtts.filter(a => !(a.memo||'').startsWith('[취소]'));
+  // 결제 구간별로 출결 나누기
+  // 구간 = [이 결제일, 다음 유효 결제일) — 취소된 결제는 구간 시작점에서 제외
+  const validPays = payList.filter(p => !p.isCancelled);
 
-  let rows = '';
-  let validIdx = 0;
-  allAtts.forEach(a => {
-    const isCancelled = (a.memo||'').startsWith('[취소]');
-    const isAbsent    = a.memo === '당일결석';
-    const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
-    const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
-    const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
+  let sectionsHtml = '';
 
-    let badge = '';
-    let numCell = '';
-    if (isCancelled) {
-      badge = `<span style="font-size:10px;color:var(--danger);border:1px solid var(--danger);
-        border-radius:5px;padding:1px 5px;">취소</span>`;
-      numCell = `<span style="color:var(--text3);">—</span>`;
-    } else {
-      validIdx++;
-      const overLimit = total > 0 && validIdx > total;
-      const numColor = overLimit ? 'var(--danger)' : 'var(--primary)';
-      numCell = `<b style="color:${numColor};">${validIdx}회차</b>`;
-      if (isAbsent) badge = `<span style="font-size:10px;color:var(--warning);border:1px solid var(--warning);
-        border-radius:5px;padding:1px 5px;">결석</span>`;
-    }
+  if (validPays.length === 0) {
+    // 결제 기록이 아예 없는 경우 — 전체 출결을 하나로 표시 (기존 방식)
+    let validIdx = 0;
+    const rows = allAttSorted.map(a => {
+      const isCancelled = (a.memo||'').startsWith('[취소]');
+      const isAbsent    = a.memo === '당일결석';
+      const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
+      const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
+      const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
+      let numCell = '';
+      let badge = '';
+      if (isCancelled) {
+        badge = `<span style="font-size:10px;color:var(--danger);border:1px solid var(--danger);border-radius:5px;padding:1px 5px;">취소</span>`;
+        numCell = `<span style="color:var(--text3);">—</span>`;
+      } else {
+        validIdx++;
+        const overLimit = totalNow > 0 && validIdx > totalNow;
+        numCell = `<b style="color:${overLimit ? 'var(--danger)' : 'var(--primary)'};">${validIdx}회차</b>`;
+        if (isAbsent) badge = `<span style="font-size:10px;color:var(--warning);border:1px solid var(--warning);border-radius:5px;padding:1px 5px;">결석</span>`;
+      }
+      return `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;${isCancelled?'opacity:0.5;':''}">
+        <span style="color:var(--text2);">${numCell} &nbsp; ${classDay} (${dow}) ${timeStr}</span>
+        <span>${a.teacherName||'—'} ${badge}</span>
+      </div>`;
+    }).join('');
+    sectionsHtml = `<div style="border:1px solid var(--border2);border-radius:10px;padding:12px 14px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">전체 출결 기록 (결제 기록 없음)</div>
+      ${rows || '<div style="color:var(--text3);font-size:13px;">출결 기록이 없습니다</div>'}
+    </div>`;
+  } else {
+    // 결제 구간별로 나누기
+    const sections = validPays.map((p, i) => {
+      const startDate = (p.paymentDate||'').slice(0,10);
+      const nextPay = validPays[i+1];
+      const endDate = nextPay ? (nextPay.paymentDate||'').slice(0,10) : null;
 
-    rows += `<tr style="${isCancelled ? 'opacity:0.5;' : ''}">
-      <td style="text-align:center;">${numCell}</td>
-      <td style="white-space:nowrap;">${classDay} (${dow})</td>
-      <td style="color:var(--text2);font-size:12px;">${timeStr}</td>
-      <td>${a.teacherName||'—'} ${badge}</td>
-    </tr>`;
-  });
+      const sectionAtts = allAttSorted.filter(a => {
+        const d = (a.classDate||'').slice(0,10);
+        if (!d || !startDate) return false;
+        if (d < startDate) return false;
+        if (endDate && d >= endDate) return false;
+        return true;
+      });
 
-  if (!rows) {
-    rows = `<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:16px;">
-      이번 수강권 수업 이력이 없습니다</td></tr>`;
+      const validSectionAtts = sectionAtts.filter(a => !(a.memo||'').startsWith('[취소]'));
+      const sectionTotal = p.totalSessions || 0;
+      const isLatest = i === validPays.length - 1;
+      const usedInSection = validSectionAtts.length;
+      const isComplete = sectionTotal > 0 && usedInSection >= sectionTotal;
+
+      const statusBadge = isLatest
+        ? (isComplete
+            ? `<span style="font-size:12px;background:var(--danger);color:#fff;border-radius:6px;padding:2px 8px;">소진완료</span>`
+            : `<span style="font-size:12px;background:var(--success);color:#fff;border-radius:6px;padding:2px 8px;">진행중</span>`)
+        : `<span style="font-size:12px;background:var(--text3);color:#fff;border-radius:6px;padding:2px 8px;">종료</span>`;
+
+      const rows = sectionAtts.map(a => {
+        const isCancelled = (a.memo||'').startsWith('[취소]');
+        const isAbsent    = a.memo === '당일결석';
+        const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
+        const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
+        const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
+        let numCell = '';
+        let badge = '';
+        if (isCancelled) {
+          badge = `<span style="font-size:10px;color:var(--danger);">취소</span>`;
+          numCell = `<span style="color:var(--text3);">—</span>`;
+        } else {
+          const idx = validSectionAtts.indexOf(a) + 1;
+          const overLimit = sectionTotal > 0 && idx > sectionTotal;
+          numCell = `<b style="color:${overLimit ? 'var(--danger)' : 'var(--primary)'};">${idx}회차</b>`;
+          if (isAbsent) badge = `<span style="font-size:10px;color:var(--warning);">결석</span>`;
+        }
+        return `<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;${isCancelled?'opacity:0.5;':''}">
+          <span style="color:var(--text2);">${numCell} &nbsp; ${classDay} (${dow}) ${timeStr}</span>
+          <span>${a.teacherName||'—'} ${badge}</span>
+        </div>`;
+      }).join('');
+
+      const payAmtDisplay = p.paymentAmount
+        ? Number(p.paymentAmount).toLocaleString() + '원'
+        : '';
+
+      return `<div style="border:1px solid ${isLatest ? 'var(--primary)' : 'var(--border2)'};border-radius:10px;padding:12px 14px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            ${statusBadge}
+            <span style="font-size:13px;font-weight:700;">${startDate} 결제 — ${sectionTotal}회권 ${payAmtDisplay}</span>
+          </div>
+          <span style="font-size:12px;color:var(--text2);">${usedInSection}/${sectionTotal}회</span>
+        </div>
+        ${rows || '<div style="color:var(--text3);font-size:12px;">아직 진행된 수업이 없습니다</div>'}
+      </div>`;
+    });
+
+    // 취소된 결제 별도 표시
+    const cancelledPays = payList.filter(p => p.isCancelled);
+    const cancelledHtml = cancelledPays.map(p => {
+      const d = (p.paymentDate||'').slice(0,10);
+      const amt = p.paymentAmount ? Number(p.paymentAmount).toLocaleString() + '원' : '';
+      return `<div style="border:1px solid var(--border2);border-radius:10px;padding:10px 14px;margin-bottom:10px;opacity:0.5;">
+        <span style="font-size:12px;background:var(--danger);color:#fff;border-radius:6px;padding:2px 8px;">취소</span>
+        <span style="font-size:13px;margin-left:8px;">${d} 결제 — ${p.totalSessions||0}회권 ${amt}</span>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;">취소된 결제입니다</div>
+      </div>`;
+    }).join('');
+
+    // 최신 결제가 위로 오도록 역순 배치
+    sectionsHtml = cancelledHtml + sections.slice().reverse().join('');
   }
 
-  const payDateLabel = payDate
-    ? `결제일 ${payDate} 이후 · 총 ${total}회권 · ${validIdx}회 진행`
-    : `총 ${total}회권 · ${validIdx}회 진행`;
-
-  document.getElementById('modal-title').textContent = `📋 ${studentName} - 이번 수강권 수업 이력`;
+  document.getElementById('modal-title').textContent = `📋 ${studentName} - 결제 이력`;
   document.getElementById('modal-body').innerHTML = `
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;padding:8px 12px;
-      background:var(--surface);border-radius:8px;">${payDateLabel}</div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th style="text-align:center;">회차</th><th>수업일</th><th>시각</th><th>선생님</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">결제별 수업 진행 현황</div>
+    ${sectionsHtml}`;
   document.getElementById('modal-footer').innerHTML =
     `<button class="btn btn-secondary" onclick="closeModal()">닫기</button>`;
   openModal();
