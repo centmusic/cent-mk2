@@ -1875,7 +1875,7 @@ async function sbCallFn(fn, params) {
 
       // ── 전체 데이터 조회
       case 'getAllData': {
-        const [students, teachers, attendance, timetable, memos, payments] = await Promise.all([
+        const [students, teachers, attendance, timetable, memos, payments, adjustments] = await Promise.all([
           sbQuery('students', { select: '*', order: 'id.asc' }),
           sbQuery('teachers', { select: '*', order: 'id.asc' }),
           (() => {
@@ -1888,6 +1888,7 @@ async function sbCallFn(fn, params) {
           sbQuery('timetable', { select: '*', order: 'id.asc' }),
           sbQuery('memos', { select: '*', order: 'created_at.desc' }),
           sbQuery('payments', { select: '*', order: 'payment_date.desc' }),
+          sbQuery('student_adjustments', { select: '*', order: 'adjusted_at.asc' }).catch(() => []),
         ]);
         // 학생의 payment_date가 비어있으면 payments 테이블의 최근 결제일로 보완
         const latestPaymentMap = {};
@@ -1942,6 +1943,11 @@ async function sbCallFn(fn, params) {
             paymentAmount: p.payment_amount||'', paymentMemo: p.payment_memo||'',
             studentType: p.student_type||'', subject: p.subject||'',
             paymentDate: fmtDate(p.payment_date), isCancelled: !!p.is_cancelled
+          })),
+          adjustments: (Array.isArray(adjustments) ? adjustments : []).map(a => ({
+            rowIndex: a.id, studentName: a.student_name||'',
+            field: a.field||'', oldValue: a.old_value, newValue: a.new_value,
+            reason: a.reason||'', adjustedAt: fmtDateTime(a.adjusted_at)
           }))
         };
       }
@@ -1986,6 +1992,28 @@ async function sbCallFn(fn, params) {
             student_type: d.studentType||'', subject: d.subject||''
           }
         });
+
+        // 총횟수/사용횟수가 바뀐 경우 조정 이력 기록 (읽기 전용 로그 — 실패해도 저장 자체엔 영향 없음)
+        try {
+          const origTotal = Number(d.origTotalSessions);
+          const origUsed  = Number(d.origUsedSessions);
+          const reason = d.adjustReason || '';
+          if (!isNaN(origTotal) && origTotal !== total) {
+            await sbQuery('student_adjustments', {
+              method: 'POST',
+              body: { student_name: d.name, field: 'total_sessions', old_value: origTotal, new_value: total, reason }
+            });
+          }
+          if (!isNaN(origUsed) && origUsed !== used) {
+            await sbQuery('student_adjustments', {
+              method: 'POST',
+              body: { student_name: d.name, field: 'used_sessions', old_value: origUsed, new_value: used, reason }
+            });
+          }
+        } catch (e) {
+          console.error('조정 이력 기록 실패 (학생 정보 저장은 정상 완료됨):', e);
+        }
+
         return { success: true };
       }
 
@@ -2461,6 +2489,7 @@ function sdAttendance()  { return (state.data && state.data.attendance)  || []; 
 function sdTimetable()   { return (state.data && state.data.timetable)   || []; }
 function sdMemos()       { return (state.data && state.data.memos)       || []; }
 function sdPayments()    { return (state.data && state.data.payments)    || []; }
+function sdAdjustments() { return (state.data && state.data.adjustments) || []; }
 
 const state = {
   currentScreen: 'home',
@@ -2505,21 +2534,23 @@ function onDataLoaded(data) {
     showToast('데이터 오류: ' + data.error, 'error');
     // 에러가 있어도 빈 배열로 초기화 (화면이 완전히 빈 채로 멈추지 않도록)
     state.data = {
-      students:   data.students   || [],
-      teachers:   data.teachers   || [],
-      attendance: data.attendance || [],
-      timetable:  data.timetable  || [],
-      memos:      data.memos      || [],
-      payments:   data.payments   || []
+      students:    data.students    || [],
+      teachers:    data.teachers    || [],
+      attendance:  data.attendance  || [],
+      timetable:   data.timetable   || [],
+      memos:       data.memos       || [],
+      payments:    data.payments    || [],
+      adjustments: data.adjustments || []
     };
   } else {
     state.data = {
-      students:   data.students   || [],
-      teachers:   data.teachers   || [],
-      attendance: data.attendance || [],
-      timetable:  data.timetable  || [],
-      memos:      data.memos      || [],
-      payments:   data.payments   || []
+      students:    data.students    || [],
+      teachers:    data.teachers    || [],
+      attendance:  data.attendance  || [],
+      timetable:   data.timetable   || [],
+      memos:       data.memos       || [],
+      payments:    data.payments    || [],
+      adjustments: data.adjustments || []
     };
   }
 
@@ -3024,6 +3055,10 @@ function openEditStudentModal(s) {
       <div class="form-group"><label class="form-label">등록일 (신규 가입일)</label>
         <input class="form-control" id="m-enrolldate" type="date" value="${s.createdAt}"></div>
     </div>
+    <div class="form-group">
+      <label class="form-label">횟수 조정 사유 (총/사용횟수를 바꿀 때만 입력)</label>
+      <input class="form-control" id="m-adjust-reason" placeholder="예: 학부모 요청으로 1회 차감">
+    </div>
     <div class="form-group"><label class="form-label">최근 결제일</label>
       <input class="form-control" value="${s.paymentDate || '결제 기록 없음'}" readonly style="opacity:0.5;cursor:not-allowed;"></div>
     <div class="form-group"><label class="form-label">메모</label><input class="form-control" id="m-memo" value="${s.memo||''}"></div>
@@ -3037,6 +3072,10 @@ function openEditStudentModal(s) {
 function saveEditStudent(rowIndex, createdAt, paymentDate, paymentAmount, paymentMemo) {
   const name = document.getElementById('m-name').value.trim();
   if (!name) { showToast('이름을 입력하세요', 'warning'); return; }
+
+  // 수정 전 원래 값 (변경 감지용 — 조정 이력 기록에 사용)
+  const origStudent = sdStudents().find(st => st.rowIndex === rowIndex) || {};
+
   const d = {
     rowIndex,
     createdAt: document.getElementById('m-enrolldate').value || createdAt,
@@ -3058,6 +3097,10 @@ function saveEditStudent(rowIndex, createdAt, paymentDate, paymentAmount, paymen
     parentPhone: document.getElementById('m-parentphone').value.trim(),
     studentType: document.getElementById('m-studenttype')?.value || '',
     subject: document.getElementById('m-subject')?.value || '',
+    // 조정 이력 기록용 (총/사용횟수가 바뀐 경우에만 서버에서 기록됨)
+    origTotalSessions: origStudent.totalSessions,
+    origUsedSessions: origStudent.usedSessions,
+    adjustReason: document.getElementById('m-adjust-reason')?.value.trim() || '',
   };
   closeModal(); showLoading(true);
   callAPI('updateStudent', d)
@@ -5766,9 +5809,27 @@ function showStudentAttHistory(studentName) {
     sectionsHtml = cancelledHtml + renderedSections.slice().reverse().join('');
   }
 
+  // ── 관리자 수동 조정 이력 (총/사용횟수를 직접 바꾼 기록)
+  const myAdjustments = sdAdjustments()
+    .filter(a => a.studentName === studentName)
+    .sort((a,b) => (a.adjustedAt||'').localeCompare(b.adjustedAt||''));
+
+  const adjustHtml = myAdjustments.length === 0 ? '' : `
+    <div style="border:1px solid var(--warning);border-radius:10px;padding:12px 14px;margin-bottom:14px;background:rgba(255,165,0,0.06);">
+      <div style="font-size:13px;font-weight:700;color:var(--warning);margin-bottom:8px;">⚠ 관리자 수동 조정 이력</div>
+      ${myAdjustments.map(a => {
+        const fieldLabel = a.field === 'total_sessions' ? '총횟수' : '사용횟수';
+        const reasonText = a.reason ? ` — ${a.reason}` : '';
+        return `<div style="font-size:12px;color:var(--text2);padding:3px 0;">
+          ${a.adjustedAt} &nbsp; <b>${fieldLabel}</b> ${a.oldValue} → ${a.newValue}${reasonText}
+        </div>`;
+      }).join('')}
+    </div>`;
+
   document.getElementById('modal-title').textContent = `📋 ${studentName} - 결제 이력`;
   document.getElementById('modal-body').innerHTML = `
     <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">결제별 수업 진행 현황 (초과분은 다음 결제건으로 이월 표시)</div>
+    ${adjustHtml}
     ${sectionsHtml}`;
   document.getElementById('modal-footer').innerHTML =
     `<button class="btn btn-secondary" onclick="closeModal()">닫기</button>`;
