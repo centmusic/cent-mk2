@@ -5726,22 +5726,53 @@ function showStudentAttHistory(studentName) {
       ${rows}${fillerRows || (rows ? '' : '<div style="color:var(--text3);font-size:13px;">출결 기록이 없습니다</div>')}
     </div>`;
   } else {
-    let carry = [];
-    const renderedSections = [];
-
-    validPays.forEach((p, i) => {
+    // ── 경계일(결제일과 정확히 같은 날짜) 출결 재배정 전처리
+    //    "이전 구간에 자리가 남아있으면" 그 경계일 출결을 이전 구간 마지막 회차로 우선 배정
+    //    (학원 특성상 결제는 항상 수업받으러 온 날 발생하므로, 그날 수업은
+    //     통상 "그때까지 쓰던 수강권"의 마지막 회차로 보는 것이 자연스러움)
+    const rawSections = validPays.map((p, i) => {
       const startDate = (p.paymentDate||'').slice(0,10);
       const nextPay = validPays[i+1];
       const endDate = nextPay ? (nextPay.paymentDate||'').slice(0,10) : null;
-      const isLatest = i === validPays.length - 1;
-
       const ownAtts = allAttSorted.filter(a => {
         const d = (a.classDate||'').slice(0,10);
         if (!d || !startDate) return false;
         if (d < startDate) return false;
         if (endDate && d >= endDate) return false;
         return true;
-      }).map(a => ({ type: 'att', sortKey: a.classDate, att: a }));
+      });
+      return { startDate, endDate, sectionTotal: p.totalSessions || 0, ownAtts: [...ownAtts] };
+    });
+    for (let bi = 1; bi < rawSections.length; bi++) {
+      const prevSec = rawSections[bi-1];
+      const curSec  = rawSections[bi];
+      const boundaryDate = curSec.startDate;
+      const prevValidCount = prevSec.ownAtts.filter(a => !(a.memo||'').startsWith('[취소]')).length;
+      let remainingCap = Math.max(0, prevSec.sectionTotal - prevValidCount);
+      if (remainingCap <= 0) continue;
+      const idxToMove = [];
+      for (let j = 0; j < curSec.ownAtts.length && idxToMove.length < remainingCap; j++) {
+        const a = curSec.ownAtts[j];
+        if ((a.memo||'').startsWith('[취소]')) continue;
+        if ((a.classDate||'').slice(0,10) !== boundaryDate) break;
+        idxToMove.push(j);
+      }
+      if (idxToMove.length === 0) continue;
+      const moved = idxToMove.map(j => curSec.ownAtts[j]);
+      curSec.ownAtts = curSec.ownAtts.filter((_, j) => !idxToMove.includes(j));
+      prevSec.ownAtts.push(...moved);
+    }
+
+    let carry = [];
+    const renderedSections = [];
+
+    validPays.forEach((p, i) => {
+      const startDate = (p.paymentDate||'').slice(0,10);
+      const endDate = rawSections[i].endDate;
+      const isLatest = i === validPays.length - 1;
+
+      // 경계일 재배정이 반영된 출결 목록 사용
+      const ownAtts = rawSections[i].ownAtts.map(a => ({ type: 'att', sortKey: a.classDate, att: a }));
 
       const ownAdjustments = usedAdjustments.filter(adj => {
         const d = (adj.adjustedAt||'').slice(0,10);
