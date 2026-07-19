@@ -5654,16 +5654,27 @@ function showStudentAttHistory(studentName) {
   if (!s) return;
 
   const DAY_KR = ['일','월','화','수','목','금','토'];
+  const liveTotalSessions = s.totalSessions || 0;
+  const liveUsedSessions  = s.usedSessions  || 0;
 
-  // 학생의 전체 결제 기록 (날짜 오름차순, 취소 포함)
   const payList = sdPayments()
     .filter(p => p.studentName === studentName)
     .sort((a,b) => (a.paymentDate||'').localeCompare(b.paymentDate||''));
 
-  // 학생의 전체 출결 기록 (날짜 오름차순)
   const allAttSorted = sdAttendance()
     .filter(a => a.studentName === studentName)
     .sort((a,b) => (a.classDate||'').localeCompare(b.classDate||''));
+
+  // 관리자가 사용횟수(used_sessions)를 수동 조정한 이력
+  const usedAdjustments = sdAdjustments()
+    .filter(a => a.studentName === studentName && a.field === 'used_sessions')
+    .map(a => ({
+      adjustedAt: a.adjustedAt,
+      delta: (Number(a.newValue)||0) - (Number(a.oldValue)||0),
+      reason: a.reason || ''
+    }))
+    .filter(a => a.delta !== 0)
+    .sort((a,b) => (a.adjustedAt||'').localeCompare(b.adjustedAt||''));
 
   const validPays = payList.filter(p => !p.isCancelled);
   const cancelledPays = payList.filter(p => p.isCancelled);
@@ -5671,9 +5682,9 @@ function showStudentAttHistory(studentName) {
   let sectionsHtml = '';
 
   if (validPays.length === 0) {
-    // 결제 기록이 아예 없는 경우 — 전체 출결을 하나로 표시
+    // 결제 기록이 아예 없는 경우 — live 값을 그대로 신뢰해서 표시
+    const totalNow = liveTotalSessions;
     let validIdx = 0;
-    const totalNow = s.totalSessions || 0;
     const rows = allAttSorted.map(a => {
       const isCancelled = (a.memo||'').startsWith('[취소]');
       const isAbsent    = a.memo === '당일결석';
@@ -5696,19 +5707,33 @@ function showStudentAttHistory(studentName) {
         <span>${a.teacherName||'—'} ${badge}</span>
       </div>`;
     }).join('');
+    // 실제 기록이 live보다 적으면 필러로 채움 (무조건 정확한 숫자 보장)
+    let fillerRows = '';
+    if (validIdx < liveUsedSessions) {
+      for (let k = validIdx; k < liveUsedSessions; k++) {
+        const n = k + 1;
+        const overLimit = totalNow > 0 && n > totalNow;
+        fillerRows += `<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;">
+          <span style="color:var(--text2);"><b style="color:${overLimit?'var(--danger)':'var(--primary)'};">${n}회차</b> (사유 불명 조정분)</span>
+        </div>`;
+      }
+    }
     sectionsHtml = `<div style="border:1px solid var(--border2);border-radius:10px;padding:12px 14px;">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;">전체 출결 기록 (결제 기록 없음)</div>
-      ${rows || '<div style="color:var(--text3);font-size:13px;">출결 기록이 없습니다</div>'}
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:700;">전체 출결 기록 (결제 기록 없음)</div>
+        <span style="font-size:12px;color:var(--text2);">${liveUsedSessions}/${liveTotalSessions}회</span>
+      </div>
+      ${rows}${fillerRows || (rows ? '' : '<div style="color:var(--text3);font-size:13px;">출결 기록이 없습니다</div>')}
     </div>`;
   } else {
-    // ── 결제 구간별로 나누고, 초과분은 다음 구간으로 이월(carry-over)
-    let carry = []; // [{att, originLabel}]
+    let carry = [];
     const renderedSections = [];
 
     validPays.forEach((p, i) => {
       const startDate = (p.paymentDate||'').slice(0,10);
       const nextPay = validPays[i+1];
       const endDate = nextPay ? (nextPay.paymentDate||'').slice(0,10) : null;
+      const isLatest = i === validPays.length - 1;
 
       const ownAtts = allAttSorted.filter(a => {
         const d = (a.classDate||'').slice(0,10);
@@ -5716,60 +5741,119 @@ function showStudentAttHistory(studentName) {
         if (d < startDate) return false;
         if (endDate && d >= endDate) return false;
         return true;
-      });
+      }).map(a => ({ type: 'att', sortKey: a.classDate, att: a }));
 
-      // 이월분(carry) + 이번 구간 자체 기록 (날짜순 자동 정렬 유지됨: carry가 항상 더 이전 날짜)
-      const combined = [
-        ...carry.map(c => ({ ...c.att, _carried: true, _originLabel: c.originLabel })),
-        ...ownAtts.map(a => ({ ...a, _carried: false }))
-      ];
+      const ownAdjustments = usedAdjustments.filter(adj => {
+        const d = (adj.adjustedAt||'').slice(0,10);
+        if (!d) return false;
+        if (d < startDate) return false;
+        if (endDate && d >= endDate) return false;
+        return true;
+      }).map(adj => ({ type: 'adjust', sortKey: adj.adjustedAt, delta: adj.delta, reason: adj.reason, adjustedAt: adj.adjustedAt }));
 
-      const sectionTotal = p.totalSessions || 0;
+      const ownEvents = [...ownAtts, ...ownAdjustments].sort((a,b) => a.sortKey.localeCompare(b.sortKey));
+      const combined = [...carry, ...ownEvents];
+
+      // 지난(종료된) 구간은 결제기록 당시 total_sessions, 최신 구간은 학생정보 live 값
+      const sectionTotal = isLatest ? liveTotalSessions : (p.totalSessions || 0);
+
       let validIdx = 0;
       const newCarry = [];
       const rowsArr = [];
 
-      combined.forEach(a => {
-        const isCancelled = (a.memo||'').startsWith('[취소]');
-        const isAbsent    = a.memo === '당일결석';
-        const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
-        const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
-        const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
+      combined.forEach(item => {
+        if (item.type === 'att') {
+          const a = item.att;
+          const isCancelled = (a.memo||'').startsWith('[취소]');
+          const isAbsent    = a.memo === '당일결석';
+          const classDay    = a.classDate ? a.classDate.slice(0,10) : '—';
+          const timeStr     = a.classDate && a.classDate.length > 10 ? a.classDate.slice(11,16) : '';
+          const dow         = classDay !== '—' ? DAY_KR[new Date(classDay).getDay()]+'요일' : '';
 
-        if (isCancelled) {
-          rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;opacity:0.5;">
-            <span style="color:var(--text2);"><span style="color:var(--text3);">—</span> &nbsp; ${classDay} (${dow}) ${timeStr}</span>
-            <span>${a.teacherName||'—'} <span style="font-size:10px;color:var(--danger);">취소</span></span>
+          if (isCancelled) {
+            rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;opacity:0.5;">
+              <span style="color:var(--text2);"><span style="color:var(--text3);">—</span> &nbsp; ${classDay} (${dow}) ${timeStr}</span>
+              <span>${a.teacherName||'—'} <span style="font-size:10px;color:var(--danger);">취소</span></span>
+            </div>`);
+            return;
+          }
+
+          validIdx++;
+          const overLimit = sectionTotal > 0 && validIdx > sectionTotal;
+          const numColor = overLimit ? 'var(--danger)' : 'var(--primary)';
+          const carriedNote = item._carried
+            ? `<span style="font-size:10px;color:var(--accent);margin-left:4px;">(${item._originLabel})</span>`
+            : '';
+          const absentBadge = isAbsent
+            ? `<span style="font-size:10px;color:var(--warning);margin-left:4px;">결석</span>`
+            : '';
+
+          rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;">
+            <span style="color:var(--text2);"><b style="color:${numColor};">${validIdx}회차</b>${carriedNote} &nbsp; ${classDay} (${dow}) ${timeStr}</span>
+            <span>${a.teacherName||'—'} ${absentBadge}</span>
           </div>`);
-          return;
-        }
 
-        validIdx++;
-        const overLimit = sectionTotal > 0 && validIdx > sectionTotal;
-        const numColor = overLimit ? 'var(--danger)' : 'var(--primary)';
-
-        const carriedNote = a._carried
-          ? `<span style="font-size:10px;color:var(--accent);margin-left:4px;">(${a._originLabel})</span>`
-          : '';
-        const absentBadge = isAbsent
-          ? `<span style="font-size:10px;color:var(--warning);margin-left:4px;">결석</span>`
-          : '';
-
-        rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;">
-          <span style="color:var(--text2);"><b style="color:${numColor};">${validIdx}회차</b>${carriedNote} &nbsp; ${classDay} (${dow}) ${timeStr}</span>
-          <span>${a.teacherName||'—'} ${absentBadge}</span>
-        </div>`);
-
-        if (overLimit) {
-          newCarry.push({
-            att: a,
-            originLabel: `${startDate} 결제건 ${validIdx}회차분 이월`
-          });
+          // 이월은 종료된 구간에서만 다음 구간으로 넘김 (최신 구간은 넘길 다음 구간이 없음)
+          if (overLimit && !isLatest) {
+            newCarry.push({ type: 'att', att: a, _carried: true, _originLabel: `${startDate} 결제건 ${validIdx}회차분 이월` });
+          }
+        } else {
+          const n = Math.abs(item.delta);
+          if (item.delta > 0) {
+            for (let k = 0; k < n; k++) {
+              validIdx++;
+              const overLimit = sectionTotal > 0 && validIdx > sectionTotal;
+              const numColor = overLimit ? 'var(--danger)' : 'var(--accent)';
+              rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;">
+                <span style="color:var(--text2);"><b style="color:${numColor};">${validIdx}회차</b>
+                  <span style="font-size:10px;color:var(--warning);margin-left:4px;">관리자 조정${item.reason ? ' · '+item.reason : ''}</span>
+                </span>
+                <span style="color:var(--text3);font-size:11px;">${(item.adjustedAt||'').slice(0,16)}</span>
+              </div>`);
+              if (overLimit && !isLatest) {
+                newCarry.push({ type: 'adjust', delta: 1, reason: item.reason, adjustedAt: item.adjustedAt });
+              }
+            }
+          } else if (item.delta < 0) {
+            for (let k = 0; k < n; k++) { if (validIdx > 0) validIdx--; }
+            rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;opacity:0.7;">
+              <span style="color:var(--text2);">
+                <span style="color:var(--success);font-weight:700;">조정(-${n})</span>
+                <span style="font-size:10px;color:var(--warning);margin-left:4px;">관리자 조정${item.reason ? ' · '+item.reason : ''}</span>
+              </span>
+              <span style="color:var(--text3);font-size:11px;">${(item.adjustedAt||'').slice(0,16)}</span>
+            </div>`);
+          }
         }
       });
 
-      const isLatest = i === validPays.length - 1;
-      const isComplete = sectionTotal > 0 && validIdx >= sectionTotal;
+      let warningNote = '';
+      let displayUsed = validIdx;
+      let displayTotal = sectionTotal;
+
+      if (isLatest) {
+        // 최신 구간은 학생정보의 live 값을 절대 기준으로 삼는다
+        if (validIdx < liveUsedSessions) {
+          // 실제 기록보다 live가 더 크면 — 부족분을 "사유 불명 조정분"으로 채워서 무조건 정확히 맞춘다
+          const gap = liveUsedSessions - validIdx;
+          for (let k = 0; k < gap; k++) {
+            validIdx++;
+            const overLimit = liveTotalSessions > 0 && validIdx > liveTotalSessions;
+            rowsArr.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;">
+              <span style="color:var(--text2);"><b style="color:${overLimit?'var(--danger)':'var(--primary)'};">${validIdx}회차</b>
+                <span style="font-size:10px;color:var(--text3);margin-left:4px;">(사유 불명 조정분)</span>
+              </span>
+            </div>`);
+          }
+        } else if (validIdx > liveUsedSessions) {
+          // 실제 기록이 더 많음 — 기록을 숨기지 않고 경고만 표시
+          warningNote = `⚠ 실제 기록(${validIdx}건)이 학생정보 사용횟수(${liveUsedSessions})보다 많습니다. 데이터 확인이 필요할 수 있습니다.`;
+        }
+        displayUsed = Math.max(validIdx, liveUsedSessions);
+        displayTotal = liveTotalSessions;
+      }
+
+      const isComplete = displayTotal > 0 && displayUsed >= displayTotal;
       const statusBadge = isLatest
         ? (isComplete
             ? `<span style="font-size:12px;background:var(--danger);color:#fff;border-radius:6px;padding:2px 8px;">소진완료</span>`
@@ -5780,21 +5864,25 @@ function showStudentAttHistory(studentName) {
         ? Number(p.paymentAmount).toLocaleString() + '원'
         : '';
 
+      const warningHtml = warningNote
+        ? `<div style="font-size:11px;color:var(--danger);margin-bottom:6px;">${warningNote}</div>`
+        : '';
+
       renderedSections.push(`<div style="border:1px solid ${isLatest ? 'var(--primary)' : 'var(--border2)'};border-radius:10px;padding:12px 14px;margin-bottom:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="display:flex;align-items:center;gap:8px;">
             ${statusBadge}
-            <span style="font-size:13px;font-weight:700;">${startDate} 결제 — ${sectionTotal}회권 ${payAmtDisplay}</span>
+            <span style="font-size:13px;font-weight:700;">${startDate} 결제 — ${displayTotal}회권 ${payAmtDisplay}</span>
           </div>
-          <span style="font-size:12px;color:var(--text2);">${validIdx}/${sectionTotal}회</span>
+          <span style="font-size:12px;color:var(--text2);">${displayUsed}/${displayTotal}회</span>
         </div>
+        ${warningHtml}
         ${rowsArr.join('') || '<div style="color:var(--text3);font-size:12px;">아직 진행된 수업이 없습니다</div>'}
       </div>`);
 
       carry = newCarry;
     });
 
-    // 취소된 결제 별도 표시
     const cancelledHtml = cancelledPays.map(p => {
       const d = (p.paymentDate||'').slice(0,10);
       const amt = p.paymentAmount ? Number(p.paymentAmount).toLocaleString() + '원' : '';
@@ -5805,30 +5893,33 @@ function showStudentAttHistory(studentName) {
       </div>`;
     }).join('');
 
-    // 최신 결제가 위로 오도록 역순 배치
     sectionsHtml = cancelledHtml + renderedSections.slice().reverse().join('');
   }
 
-  // ── 관리자 수동 조정 이력 (총/사용횟수를 직접 바꾼 기록)
-  const myAdjustments = sdAdjustments()
-    .filter(a => a.studentName === studentName)
+  const totalAdjustments = sdAdjustments()
+    .filter(a => a.studentName === studentName && a.field === 'total_sessions')
     .sort((a,b) => (a.adjustedAt||'').localeCompare(b.adjustedAt||''));
 
-  const adjustHtml = myAdjustments.length === 0 ? '' : `
+  const allAdjustmentsForDisplay = [
+    ...usedAdjustments.map(a => ({ adjustedAt: a.adjustedAt, field: '사용횟수', delta: a.delta, reason: a.reason })),
+    ...totalAdjustments.map(a => ({ adjustedAt: a.adjustedAt, field: '총횟수', oldValue: a.oldValue, newValue: a.newValue, reason: a.reason }))
+  ].sort((a,b) => (a.adjustedAt||'').localeCompare(b.adjustedAt||''));
+
+  const adjustHtml = allAdjustmentsForDisplay.length === 0 ? '' : `
     <div style="border:1px solid var(--warning);border-radius:10px;padding:12px 14px;margin-bottom:14px;background:rgba(255,165,0,0.06);">
-      <div style="font-size:13px;font-weight:700;color:var(--warning);margin-bottom:8px;">⚠ 관리자 수동 조정 이력</div>
-      ${myAdjustments.map(a => {
-        const fieldLabel = a.field === 'total_sessions' ? '총횟수' : '사용횟수';
+      <div style="font-size:13px;font-weight:700;color:var(--warning);margin-bottom:8px;">⚠ 관리자 수동 조정 이력 (진행중 구간에 실시간 반영됨)</div>
+      ${allAdjustmentsForDisplay.map(a => {
         const reasonText = a.reason ? ` — ${a.reason}` : '';
+        const valueText = a.oldValue !== undefined ? `${a.oldValue} → ${a.newValue}` : (a.delta > 0 ? `+${a.delta}` : `${a.delta}`);
         return `<div style="font-size:12px;color:var(--text2);padding:3px 0;">
-          ${a.adjustedAt} &nbsp; <b>${fieldLabel}</b> ${a.oldValue} → ${a.newValue}${reasonText}
+          ${a.adjustedAt} &nbsp; <b>${a.field}</b> ${valueText}${reasonText}
         </div>`;
       }).join('')}
     </div>`;
 
   document.getElementById('modal-title').textContent = `📋 ${studentName} - 결제 이력`;
   document.getElementById('modal-body').innerHTML = `
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">결제별 수업 진행 현황 (초과분은 다음 결제건으로 이월 표시)</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">결제별 수업 진행 현황 (진행중인 구간은 학생정보 값을 실시간 그대로 반영)</div>
     ${adjustHtml}
     ${sectionsHtml}`;
   document.getElementById('modal-footer').innerHTML =
